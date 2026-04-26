@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
 import '../providers/smc_provider.dart';
-import '../../../widgets/loading_indicator.dart';
+import '../../../widgets/shimmer_card.dart';
 
 class SmcScreen extends ConsumerWidget {
   const SmcScreen({super.key});
@@ -90,7 +90,10 @@ class SmcScreen extends ConsumerWidget {
           // Analysis result
           Expanded(
             child: analysis.when(
-              loading: () => const Center(child: LoadingIndicator()),
+              loading: () => const Padding(
+  padding: EdgeInsets.all(16),
+  child: ShimmerList(count: 4, itemHeight: 80),
+),
               error: (e, _) => Center(
                 child: Text('Error: $e', style: const TextStyle(color: AppColors.error)),
               ),

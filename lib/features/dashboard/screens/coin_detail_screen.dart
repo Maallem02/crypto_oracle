@@ -4,7 +4,6 @@ import '../../../core/constants/app_colors.dart';
 import '../../../widgets/price_chart.dart';
 import '../../../widgets/loading_indicator.dart';
 import '../providers/smc_provider.dart';
-import 'smc_screen.dart';
 
 class CoinDetailScreen extends ConsumerWidget {
   final Map<String, dynamic> coin;

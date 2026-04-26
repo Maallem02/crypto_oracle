@@ -4,8 +4,8 @@ import '../../../core/constants/app_colors.dart';
 import '../../../features/auth/providers/auth_provider.dart';
 import '../providers/market_provider.dart';
 import '../../../models/prediction_model.dart';
-import '../../../widgets/loading_indicator.dart';
 import 'coin_detail_screen.dart';
+import '../../../widgets/shimmer_card.dart';
 
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -69,7 +69,7 @@ class DashboardScreen extends ConsumerWidget {
               const _SectionTitle(title: '📈 Live Prices', subtitle: 'via CoinGecko'),
               const SizedBox(height: 12),
               markets.when(
-                loading: () => const Center(child: LoadingIndicator()),
+                loading: () => const ShimmerList(count: 5),
                 error:   (e, _) => _ErrorCard(message: e.toString()),
                 data:    (data) => Column(
                   children: data.map((coin) => _CoinCard(coin: coin)).toList(),

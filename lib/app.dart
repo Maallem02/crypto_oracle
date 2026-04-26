@@ -8,24 +8,38 @@ import 'features/auth/screens/register_screen.dart';
 import 'features/dashboard/screens/dashboard_screen.dart';
 import 'features/dashboard/screens/smc_screen.dart';
 
-final _router = GoRouter(
-  initialLocation: '/login',
-  routes: [
-    GoRoute(path: '/login',    builder: (_, __) => const LoginScreen()),
-    GoRoute(path: '/register', builder: (_, __) => const RegisterScreen()),
-    GoRoute(path: '/dashboard', builder: (_, __) => const MainShell()),
-  ],
-);
+final routerProvider = Provider<GoRouter>((ref) {
+  final authState = ref.watch(authProvider);
+  return GoRouter(
+    initialLocation: '/login',
+    redirect: (context, state) {
+      final isAuth    = authState.isAuthenticated;
+      final isLoading = authState.isLoading;
+      final onAuth    = state.matchedLocation == '/login' ||
+                        state.matchedLocation == '/register';
+      if (isLoading) return null;
+      if (isAuth && onAuth) return '/dashboard';
+      if (!isAuth && !onAuth) return '/login';
+      return null;
+    },
+    routes: [
+      GoRoute(path: '/login',    builder: (_, __) => const LoginScreen()),
+      GoRoute(path: '/register', builder: (_, __) => const RegisterScreen()),
+      GoRoute(path: '/dashboard', builder: (_, __) => const MainShell()),
+    ],
+  );
+});
 
 class CryptoOracleApp extends ConsumerWidget {
   const CryptoOracleApp({super.key});
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final router = ref.watch(routerProvider);
     return MaterialApp.router(
       title: 'CryptoOracle',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: AppColors.background),
-      routerConfig: _router,
+      routerConfig: router,
     );
   }
 }

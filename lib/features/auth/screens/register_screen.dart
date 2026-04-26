@@ -39,15 +39,8 @@ class _RegisterScreenState extends ConsumerState<RegisterScreen> {
     );
 
     if (success && mounted) {
-      // Show success then go to login
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content:          Text('Account created! Please login.'),
-          backgroundColor:  AppColors.success,
-        ),
-      );
-      context.go('/login');
-    }
+  context.go('/dashboard');
+}
   }
 
   @override

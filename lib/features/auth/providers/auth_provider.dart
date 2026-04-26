@@ -1,45 +1,27 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../data/mock_auth_repository.dart';
+import '../data/auth_repository.dart';
 import '../../../models/user_model.dart';
 
-// 👇 Switch to mock — change this to AuthRepository() when backend is ready
-final authRepositoryProvider = Provider<MockAuthRepository>((ref) {
-  return MockAuthRepository();
-});
+final authRepositoryProvider = Provider<AuthRepository>((ref) => AuthRepository());
 
-// Represents the auth state at any moment
 class AuthState {
   final UserModel? user;
   final bool       isLoading;
   final String?    error;
-
-  const AuthState({
-    this.user,
-    this.isLoading = false,
-    this.error,
-  });
-
+  const AuthState({this.user, this.isLoading = false, this.error});
   bool get isAuthenticated => user != null;
-
   AuthState copyWith({
-    UserModel? user,
-    bool?      isLoading,
-    String?    error,
-    bool       clearUser  = false,
-    bool       clearError = false,
-  }) {
-    return AuthState(
-      user:      clearUser  ? null : user      ?? this.user,
-      isLoading: isLoading  ?? this.isLoading,
-      error:     clearError ? null : error     ?? this.error,
-    );
-  }
+    UserModel? user, bool? isLoading, String? error,
+    bool clearUser = false, bool clearError = false,
+  }) => AuthState(
+    user:      clearUser  ? null : user      ?? this.user,
+    isLoading: isLoading  ?? this.isLoading,
+    error:     clearError ? null : error     ?? this.error,
+  );
 }
 
-// The main auth state notifier
 class AuthNotifier extends StateNotifier<AuthState> {
-  final MockAuthRepository _repository;
-
+  final AuthRepository _repository;
   AuthNotifier(this._repository) : super(const AuthState()) {
     _checkAuthStatus();
   }
@@ -55,20 +37,20 @@ class AuthNotifier extends StateNotifier<AuthState> {
   }
 
   Future<bool> register({
-    required String username,
-    required String email,
-    required String password,
-  }) async {
-    state = state.copyWith(isLoading: true, clearError: true);
-    try {
-      await _repository.register(username: username, email: email, password: password);
-      state = state.copyWith(isLoading: false);
-      return true;
-    } catch (e) {
-      state = state.copyWith(isLoading: false, error: e.toString());
-      return false;
-    }
+  required String username,
+  required String email,
+  required String password,
+}) async {
+  state = state.copyWith(isLoading: true, clearError: true);
+  try {
+    final user = await _repository.register(username: username, email: email, password: password);
+    state = state.copyWith(user: user, isLoading: false);
+    return true;
+  } catch (e) {
+    state = state.copyWith(isLoading: false, error: e.toString());
+    return false;
   }
+}
 
   Future<bool> login({
     required String email,
