@@ -5,6 +5,7 @@ import '../../../features/auth/providers/auth_provider.dart';
 import '../providers/market_provider.dart';
 import '../../../models/prediction_model.dart';
 import '../../../widgets/loading_indicator.dart';
+import 'coin_detail_screen.dart';
 
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -128,71 +129,77 @@ class _CoinCard extends StatelessWidget {
     final color  = isUp ? AppColors.success : AppColors.error;
     final price  = (coin['current_price'] as num).toDouble();
 
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(
-        color: AppColors.cardBackground,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.cardBorder, width: 0.5),
-      ),
-      child: Row(
-        children: [
-          // Icon
-          ClipRRect(
-            borderRadius: BorderRadius.circular(20),
-            child: Image.network(
-              coin['image'] as String,
-              width: 36, height: 36,
-              errorBuilder: (_, __, ___) =>
-                  const Icon(Icons.currency_bitcoin, color: AppColors.primary),
-            ),
+    return GestureDetector(
+  onTap: () => Navigator.push(
+    context,
+    MaterialPageRoute(builder: (_) => CoinDetailScreen(coin: coin)),
+  ),
+  child: Container(
+    margin: const EdgeInsets.only(bottom: 10),
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+    decoration: BoxDecoration(
+      color: AppColors.cardBackground,
+      borderRadius: BorderRadius.circular(14),
+      border: Border.all(color: AppColors.cardBorder, width: 0.5),
+    ),
+    child: Row(
+      children: [
+        // Icon
+        ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: Image.network(
+            coin['image'] as String,
+            width: 36, height: 36,
+            errorBuilder: (_, __, ___) =>
+                const Icon(Icons.currency_bitcoin, color: AppColors.primary),
           ),
-          const SizedBox(width: 12),
-          // Name + symbol
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(coin['name'] as String,
-                    style: const TextStyle(
-                        color: AppColors.textPrimary,
-                        fontWeight: FontWeight.w600)),
-                Text((coin['symbol'] as String).toUpperCase(),
-                    style: const TextStyle(
-                        color: AppColors.textSecondary, fontSize: 12)),
-              ],
-            ),
-          ),
-          // Price + change
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
+        ),
+        const SizedBox(width: 12),
+        // Name + symbol
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                '\$${_fmt(price)}',
-                style: const TextStyle(
-                    color: AppColors.textPrimary,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 15),
-              ),
-              Text(
-                '${isUp ? '+' : ''}${change.toStringAsFixed(2)}%',
-                style: TextStyle(color: color, fontSize: 12),
-              ),
+              Text(coin['name'] as String,
+                  style: const TextStyle(
+                      color: AppColors.textPrimary,
+                      fontWeight: FontWeight.w600)),
+              Text((coin['symbol'] as String).toUpperCase(),
+                  style: const TextStyle(
+                      color: AppColors.textSecondary, fontSize: 12)),
             ],
           ),
-          // Sparkline mini chart
-          const SizedBox(width: 12),
-          _Sparkline(
-            prices: List<double>.from(
-              (coin['sparkline_in_7d']?['price'] as List? ?? [])
-                  .map((e) => (e as num).toDouble()),
+        ),
+        // Price + change
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              '\$${_fmt(price)}',
+              style: const TextStyle(
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15),
             ),
-            isUp: isUp,
+            Text(
+              '${isUp ? '+' : ''}${change.toStringAsFixed(2)}%',
+              style: TextStyle(color: color, fontSize: 12),
+            ),
+          ],
+        ),
+        // Sparkline mini chart
+        const SizedBox(width: 12),
+        _Sparkline(
+          prices: List<double>.from(
+            (coin['sparkline_in_7d']?['price'] as List? ?? [])
+                .map((e) => (e as num).toDouble()),
           ),
-        ],
-      ),
-    );
+          isUp: isUp,
+        ),
+      ],
+    ),
+  ),
+);
   }
 
   String _fmt(double price) {
