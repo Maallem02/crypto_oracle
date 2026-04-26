@@ -1,48 +1,60 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-
+import 'core/constants/app_colors.dart';
+import 'features/auth/providers/auth_provider.dart';
 import 'features/auth/screens/login_screen.dart';
 import 'features/auth/screens/register_screen.dart';
 import 'features/dashboard/screens/dashboard_screen.dart';
+import 'features/dashboard/screens/smc_screen.dart';
 
-// ── Routes ──────────────────────────────────────────────
 final _router = GoRouter(
   initialLocation: '/login',
-  redirect: (context, state) {
-    // We'll hook Riverpod auth here in the next step
-    return null;
-  },
   routes: [
-    GoRoute(
-      path: '/login',
-      builder: (context, state) => const LoginScreen(),
-    ),
-    GoRoute(
-      path: '/register',
-      builder: (context, state) => const RegisterScreen(),
-    ),
-    GoRoute(
-      path: '/dashboard',
-      builder: (context, state) => const DashboardScreen(),
-    ),
+    GoRoute(path: '/login',    builder: (_, __) => const LoginScreen()),
+    GoRoute(path: '/register', builder: (_, __) => const RegisterScreen()),
+    GoRoute(path: '/dashboard', builder: (_, __) => const MainShell()),
   ],
 );
 
-// ── App root ─────────────────────────────────────────────
 class CryptoOracleApp extends ConsumerWidget {
   const CryptoOracleApp({super.key});
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return MaterialApp.router(
       title: 'CryptoOracle',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: const Color(0xFF0D0D0D),
-      ),
+      theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: AppColors.background),
       routerConfig: _router,
     );
   }
 }
 
+class MainShell extends ConsumerStatefulWidget {
+  const MainShell({super.key});
+  @override
+  ConsumerState<MainShell> createState() => _MainShellState();
+}
+
+class _MainShellState extends ConsumerState<MainShell> {
+  int _index = 0;
+  final _screens = const [DashboardScreen(), SmcScreen()];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: _screens[_index],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _index,
+        onTap: (i) => setState(() => _index = i),
+        backgroundColor: AppColors.cardBackground,
+        selectedItemColor: AppColors.primary,
+        unselectedItemColor: AppColors.textSecondary,
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.dashboard), label: 'Dashboard'),
+          BottomNavigationBarItem(icon: Icon(Icons.analytics), label: 'SMC'),
+        ],
+      ),
+    );
+  }
+}
