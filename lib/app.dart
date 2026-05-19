@@ -53,7 +53,6 @@ class MainShell extends ConsumerStatefulWidget {
 
 class _MainShellState extends ConsumerState<MainShell> {
   int _index = 0;
-  final _screens = const [DashboardScreen(), SmcScreen()];
   final _screens = const [DashboardScreen(), SmcScreen(), BotScreen()];
   @override
   Widget build(BuildContext context) {

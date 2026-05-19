@@ -32,7 +32,7 @@ class BotState {
 }
 
 class BotNotifier extends StateNotifier<BotState> {
-  final Dio _dio = Dio(BaseOptions(baseUrl: 'http://127.0.0.1:8000'));
+  final Dio _dio = Dio(BaseOptions(baseUrl: 'http://172.20.10.3:8000'));
   BotNotifier() : super(const BotState()) {
     _connectMT5();
   }
@@ -78,7 +78,7 @@ final botProvider = StateNotifierProvider<BotNotifier, BotState>(
   (ref) => BotNotifier());
 
 final openTradesProvider = FutureProvider.autoDispose((ref) async {
-  final dio      = Dio(BaseOptions(baseUrl: 'http://127.0.0.1:8000'));
+  final dio      = Dio(BaseOptions(baseUrl: 'http://172.20.10.3:8000'));
   final response = await dio.get('/trading/trades/open');
   return response.data['trades'] as List;
 });

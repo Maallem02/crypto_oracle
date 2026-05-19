@@ -5,7 +5,7 @@ import '../../../models/user_model.dart';
 
 class AuthRepository {
   final Dio _dio = Dio(BaseOptions(
-    baseUrl: 'http://127.0.0.1:8000',
+    baseUrl: 'http://172.20.10.3:8000',
     connectTimeout: const Duration(seconds: 10),
     receiveTimeout: const Duration(seconds: 10),
   ));
