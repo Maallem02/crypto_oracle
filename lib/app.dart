@@ -7,6 +7,7 @@ import 'features/auth/screens/login_screen.dart';
 import 'features/auth/screens/register_screen.dart';
 import 'features/dashboard/screens/dashboard_screen.dart';
 import 'features/dashboard/screens/smc_screen.dart';
+import 'features/bot/screens/bot_screen.dart';
 
 final routerProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authProvider);
@@ -53,7 +54,7 @@ class MainShell extends ConsumerStatefulWidget {
 class _MainShellState extends ConsumerState<MainShell> {
   int _index = 0;
   final _screens = const [DashboardScreen(), SmcScreen()];
-
+  final _screens = const [DashboardScreen(), SmcScreen(), BotScreen()];
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -67,6 +68,7 @@ class _MainShellState extends ConsumerState<MainShell> {
         items: const [
           BottomNavigationBarItem(icon: Icon(Icons.dashboard), label: 'Dashboard'),
           BottomNavigationBarItem(icon: Icon(Icons.analytics), label: 'SMC'),
+          BottomNavigationBarItem(icon: Icon(Icons.smart_toy), label: 'Bot'),
         ],
       ),
     );

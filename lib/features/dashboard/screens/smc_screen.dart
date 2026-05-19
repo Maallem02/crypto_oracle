@@ -17,9 +17,9 @@ class SmcScreen extends ConsumerWidget {
     const timeframes = ['5m', '15m', '30m', '1h', '4h'];
 
     return Scaffold(
-      backgroundColor: AppColors.background,
+      backgroundColor: const Color.fromARGB(255, 23, 34, 67),
       appBar: AppBar(
-        backgroundColor: AppColors.background,
+        backgroundColor: const Color.fromARGB(255, 23, 34, 67),
         elevation: 0,
         title: const Text('SMC Analysis', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
       ),

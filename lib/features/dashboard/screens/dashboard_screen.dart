@@ -21,7 +21,7 @@ class DashboardScreen extends ConsumerWidget {
         backgroundColor: AppColors.background,
         elevation: 0,
         title: const Text(
-          '🔮 CryptoOracle',
+          ' CryptoOracle',
           style: TextStyle(
             color: AppColors.primary,
             fontWeight: FontWeight.bold,
@@ -48,7 +48,7 @@ class DashboardScreen extends ConsumerWidget {
             children: [
               // ── Welcome ──────────────────────────────────────
               Text(
-                'Welcome back 👋',
+                'Welcome back ',
                 style: TextStyle(
                   color: AppColors.textSecondary,
                   fontSize: 14,
