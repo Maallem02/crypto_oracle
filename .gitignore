@@ -1,0 +1,34 @@
+# Environment variables — never commit real credentials
+.env
+.env.local
+.env.*.local
+
+# Python virtual environment
+venv/
+.venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Distribution / build
+dist/
+build/
+*.egg-info/
+
+# Database files
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

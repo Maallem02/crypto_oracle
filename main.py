@@ -5,7 +5,7 @@ from core.database import init_db
 from features.auth.router    import router as auth_router
 from features.market.router  import router as market_router
 from features.smc.router     import router as smc_router
-from features.trading.router import router as trading_router, auto_scan
+from features.trading.router import router as trading_router, auto_scan, scalp_auto_scan
 
 app = FastAPI(
     title="CryptoOracle API",
@@ -25,7 +25,8 @@ scheduler = BackgroundScheduler()
 @app.on_event("startup")
 def startup():
     init_db()
-    scheduler.add_job(auto_scan, 'interval', minutes=15, id='auto_scan')
+    scheduler.add_job(auto_scan,       'interval', minutes=15, id='auto_scan')
+    scheduler.add_job(scalp_auto_scan, 'interval', minutes=2,  id='scalp_scan')
     scheduler.start()
 
 @app.on_event("shutdown")

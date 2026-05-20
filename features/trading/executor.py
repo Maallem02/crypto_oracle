@@ -1,5 +1,5 @@
 import MetaTrader5 as mt5
-from features.trading.risk_manager import calculate_lot_size, can_trade
+from features.trading.risk_manager import calculate_lot_size, can_trade, get_daily_pnl_pct
 
 # Mapping symboles → MT5
 SYMBOL_MAP = {
@@ -18,12 +18,12 @@ def place_trade(
     tp1:    float,
     confidence: float,
     risk_percent: float = 1.0,
+    max_trades: int = 3,
 ) -> dict:
-    
-      # Assure que MT5 est connecté
+
     mt5.initialize()
-    
-    if not can_trade():
+
+    if not can_trade(max_trades):
         return {"success": False, "reason": "Max trades reached"}
     
     mt5_symbol = SYMBOL_MAP.get(symbol.upper())

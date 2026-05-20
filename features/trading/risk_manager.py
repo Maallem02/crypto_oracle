@@ -27,3 +27,14 @@ def can_trade(max_trades: int = 3) -> bool:
     if positions is None:
         return True
     return len(positions) < max_trades
+
+def get_daily_pnl_pct() -> float:
+    """Retourne le PnL du jour en % du balance"""
+    account = mt5.account_info()
+    if account is None:
+        return 0.0
+    positions = mt5.positions_get()
+    if not positions:
+        return 0.0
+    unrealized = sum(p.profit for p in positions)
+    return round((unrealized / account.balance) * 100, 2) if account.balance > 0 else 0.0

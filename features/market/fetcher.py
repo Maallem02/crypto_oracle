@@ -20,10 +20,12 @@ FOREX_SYMBOLS = {
 }
 
 TIMEFRAME_CCXT = {
-    "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h", "4h": "4h",
+    "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h", "4h": "4h",
 }
 
 TIMEFRAME_YF = {
+    "1m":  ("1m",  "1d"),
+    "3m":  ("5m",  "2d"),
     "5m":  ("5m",  "5d"),
     "15m": ("15m", "7d"),
     "30m": ("30m", "15d"),
@@ -95,9 +97,10 @@ def fetch_forex_candles(symbol: str, timeframe: str) -> pd.DataFrame:
     if df.empty:
         raise ValueError(f"Pas de données pour {symbol} en {timeframe}")
 
-    # Resample 4h depuis 1h si nécessaire
-    if timeframe == "4h":
-        df = df.resample("4h").agg({
+    # Resample si nécessaire
+    resample_map = {"3m": "3min", "4h": "4h"}
+    if timeframe in resample_map:
+        df = df.resample(resample_map[timeframe]).agg({
             "open":   "first",
             "high":   "max",
             "low":    "min",
