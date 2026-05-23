@@ -313,6 +313,7 @@ class ScalpingSettings(BaseModel):
     enabled_timeframes: list  = ["5m", "15m"]
     cooldown_minutes:   int        = 5
     htf_timeframe:      List[str]  = ["1h"]
+    lot_sizes:          dict       = {}   # ex: {"BTC": 0.01, "ETH": 0.10} — 0 = auto
 
     @field_validator('htf_timeframe', mode='before')
     @classmethod
@@ -487,6 +488,10 @@ def scalp_auto_scan():
                 if not entry_data:
                     continue
 
+                # Lot fixe par symbole si défini, sinon auto (risk-based)
+                lot_sizes  = settings.get("lot_sizes", {})
+                fixed_lot  = float(lot_sizes.get(symbol, 0))
+
                 trade = place_trade(
                     symbol=       symbol,
                     action=       bias,
@@ -496,6 +501,7 @@ def scalp_auto_scan():
                     confidence=   analysis["scalping_score"] / 100,
                     risk_percent= settings["risk_percent"],
                     max_trades=   settings["max_trades"],
+                    fixed_lot=    fixed_lot,
                 )
 
                 scalp_history.append({

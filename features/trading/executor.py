@@ -33,6 +33,7 @@ def place_trade(
     confidence: float,
     risk_percent: float = 1.0,
     max_trades: int = 3,
+    fixed_lot: float = 0.0,   # 0 = auto (risk-based), >0 = fixed lot size
 ) -> dict:
 
     _mt5_init()
@@ -108,15 +109,23 @@ def place_trade(
             f"(risk={original_risk:.5f} reward={original_reward:.5f})"
         )
 
-    # ── Lot size — calculé sur la distance SL réelle (après ancrage live) ──────
-    # Formule :
-    #   sl_ticks = distance SL en prix / taille d'un tick
-    #   lot      = risque_$ / (sl_ticks × valeur_d_un_tick_par_lot)
-    tick_size = symbol_info.trade_tick_size
-    if tick_size <= 0:
-        tick_size = symbol_info.point if symbol_info.point > 0 else 0.01
-    sl_ticks = abs(price - sl) / tick_size if tick_size > 0 else 10
-    lot_size = calculate_lot_size(mt5_symbol, risk_percent, sl_ticks)
+    # ── Lot size ──────────────────────────────────────────────────────────────
+    if fixed_lot and fixed_lot > 0:
+        # Manuel : lot fixe choisi par l'utilisateur pour ce symbole
+        lot_size = fixed_lot
+        print(f"[LOT] {symbol} fixed lot={lot_size}")
+    else:
+        # Auto : basé sur le risque (balance × risk% / sl_ticks × tick_value)
+        tick_size = symbol_info.trade_tick_size
+        if tick_size <= 0:
+            tick_size = symbol_info.point if symbol_info.point > 0 else 0.01
+        sl_ticks = abs(price - sl) / tick_size if tick_size > 0 else 10
+        lot_size = calculate_lot_size(mt5_symbol, risk_percent, sl_ticks)
+        print(f"[LOT] {symbol} auto lot={lot_size} (risk={risk_percent}%)")
+
+    # Clamp au min/max du broker
+    lot_size = max(symbol_info.volume_min, min(symbol_info.volume_max, lot_size))
+    lot_size = round(lot_size, 2)
 
     # ── Guard final : RR minimum 1.0 (sécurité) ──────────────────────────────
     if action == 'buy':
