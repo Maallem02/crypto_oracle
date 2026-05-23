@@ -148,6 +148,10 @@ class _NormalBotBody extends ConsumerWidget {
 
             // Open Trades
             _OpenTradesCard(ref: ref),
+            const SizedBox(height: 16),
+
+            // Trade History
+            _TradeHistoryCard(),
           ],
         ),
       ),
@@ -174,9 +178,6 @@ class _InfoCard extends StatelessWidget {
             Text(e.key, style: const TextStyle(color: AppColors.textSecondary, fontSize: 13)),
             const Spacer(),
             Text(e.value ?? '-', style: const TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.w600, fontSize: 13)),
-            const SizedBox(height: 16),
-            _TradeHistoryCard(),
-
           ]),
         )).toList(),
       ),

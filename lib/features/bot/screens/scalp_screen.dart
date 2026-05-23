@@ -31,18 +31,6 @@ class _ScalpScreenState extends ConsumerState<ScalpScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: AppColors.background,
-        elevation: 0,
-        title: const Text('⚡ Scalping Bot',
-          style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.bold)),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh, color: AppColors.textSecondary),
-            onPressed: ntf.refreshStatus,
-          ),
-        ],
-      ),
       body: RefreshIndicator(
         color: AppColors.primary,
         onRefresh: ntf.refreshStatus,
@@ -52,6 +40,16 @@ class _ScalpScreenState extends ConsumerState<ScalpScreen> {
           child: Column(children: [
 
             // ── Status card ───────────────────────────────────────────────
+            Row(children: [
+              const Text('⚡ Scalping Bot', style: TextStyle(
+                color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 16)),
+              const Spacer(),
+              IconButton(
+                icon: const Icon(Icons.refresh, color: AppColors.textSecondary, size: 20),
+                onPressed: ntf.refreshStatus,
+              ),
+            ]),
+            const SizedBox(height: 8),
             _StatusCard(s: s, ntf: ntf),
             const SizedBox(height: 12),
 
