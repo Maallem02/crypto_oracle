@@ -20,3 +20,6 @@ def init_db():
     """)
     conn.commit()
     conn.close()
+    # Initialiser la table de collecte de données IA
+    from features.trading.data_collector import init_signals_table
+    init_signals_table()

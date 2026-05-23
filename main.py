@@ -25,8 +25,8 @@ scheduler = BackgroundScheduler()
 @app.on_event("startup")
 def startup():
     init_db()
-    scheduler.add_job(auto_scan,       'interval', minutes=15, id='auto_scan')
-    scheduler.add_job(scalp_auto_scan, 'interval', minutes=2,  id='scalp_scan')
+    scheduler.add_job(auto_scan,       'interval', minutes=6, id='auto_scan')
+    scheduler.add_job(scalp_auto_scan, 'interval', minutes=1,  id='scalp_scan')
     scheduler.start()
 
 @app.on_event("shutdown")

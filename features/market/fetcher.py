@@ -17,6 +17,8 @@ FOREX_SYMBOLS = {
     "XAUUSD": "GC=F",
     "XAGUSD": "SI=F",
     "GBPJPY": "GBPJPY=X",
+    "EURUSD": "EURUSD=X",
+    "USDJPY": "USDJPY=X",
 }
 
 TIMEFRAME_CCXT = {

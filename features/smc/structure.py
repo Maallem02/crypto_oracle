@@ -18,9 +18,10 @@ def detect_swings(df: pd.DataFrame, lookback: int = 5) -> pd.DataFrame:
         if len(window_high) == 0 or len(window_low) == 0:
             continue
             
-        if df['high'].iloc[i] == window_high.max():
+        # >= pour gérer les doubles hauts/bas (deux bougies au même niveau)
+        if df['high'].iloc[i] >= window_high.max():
             df.at[df.index[i], 'swing_high'] = True
-        if df['low'].iloc[i] == window_low.min():
+        if df['low'].iloc[i] <= window_low.min():
             df.at[df.index[i], 'swing_low'] = True
     
     return df
