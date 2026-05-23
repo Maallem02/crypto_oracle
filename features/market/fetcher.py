@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import requests
 import ccxt
+import time
 from datetime import datetime, timedelta
 
 # ── Mapping des symboles ───────────────────────────────────────────────
@@ -44,15 +45,25 @@ YF_HEADERS = {
 }
 
 def fetch_yahoo_candles(yf_symbol: str, interval: str, period: str) -> pd.DataFrame:
-    """Fetch OHLCV depuis Yahoo Finance API directement"""
+    """Fetch OHLCV depuis Yahoo Finance API directement (3 tentatives)"""
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{yf_symbol}"
     params = {
         "interval": interval,
         "range":    period,
         "events":   "history",
     }
-    resp = requests.get(url, params=params, headers=YF_HEADERS, timeout=10)
-    resp.raise_for_status()
+    last_err = None
+    for attempt in range(3):
+        try:
+            resp = requests.get(url, params=params, headers=YF_HEADERS, timeout=10)
+            resp.raise_for_status()
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(2)
+    else:
+        raise last_err
     data = resp.json()
 
     result = data["chart"]["result"][0]
@@ -78,8 +89,18 @@ def fetch_crypto_candles(symbol: str, timeframe: str, limit: int = 200) -> pd.Da
     if not ccxt_symbol:
         raise ValueError(f"Symbole crypto inconnu : {symbol}")
 
-    tf    = TIMEFRAME_CCXT.get(timeframe, "15m")
-    ohlcv = exchange.fetch_ohlcv(ccxt_symbol, tf, limit=limit)
+    tf       = TIMEFRAME_CCXT.get(timeframe, "15m")
+    last_err = None
+    for attempt in range(3):
+        try:
+            ohlcv = exchange.fetch_ohlcv(ccxt_symbol, tf, limit=limit)
+            break
+        except Exception as e:
+            last_err = e
+            if attempt < 2:
+                time.sleep(2)
+    else:
+        raise last_err
 
     df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
