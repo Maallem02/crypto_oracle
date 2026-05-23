@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/constants/api_constants.dart';
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -101,7 +102,7 @@ class ScalpState {
 // ── Notifier ──────────────────────────────────────────────────────────────────
 
 class ScalpNotifier extends StateNotifier<ScalpState> {
-  final Dio _dio = Dio(BaseOptions(baseUrl: 'http://127.0.0.1:8000'));
+  final Dio _dio = Dio(BaseOptions(baseUrl: ApiConstants.baseUrl));
 
   ScalpNotifier() : super(const ScalpState()) {
     refreshStatus();
@@ -200,7 +201,7 @@ final scalpProvider = StateNotifierProvider<ScalpNotifier, ScalpState>(
 );
 
 final scalpHistoryProvider = StreamProvider.autoDispose<List>((ref) async* {
-  final dio = Dio(BaseOptions(baseUrl: 'http://127.0.0.1:8000'));
+  final dio = Dio(BaseOptions(baseUrl: ApiConstants.baseUrl));
   while (true) {
     try {
       final r = await dio.get('/trading/scalping/history');
