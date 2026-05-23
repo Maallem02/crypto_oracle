@@ -4,6 +4,11 @@ from typing import Union, List
 from datetime import datetime, timedelta, timezone
 import MetaTrader5 as mt5
 from features.trading.mt5_client import connect, disconnect
+from core.config import runtime
+
+def _mt5_init():
+    kwargs = {"path": runtime.mt5_path} if runtime.mt5_path else {}
+    mt5.initialize(**kwargs)
 from features.trading.executor import place_trade, close_all_trades, get_open_trades
 from features.market.fetcher import fetch_candles
 from features.smc.engine import run_smc_analysis, run_scalping_analysis
@@ -51,7 +56,7 @@ def auto_scan():
     settings = bot_state["settings"]
 
     try:
-        mt5.initialize()
+        _mt5_init()
     except Exception:
         pass
 
@@ -402,7 +407,7 @@ def scalp_auto_scan():
     settings = scalp_state["settings"]
 
     try:
-        mt5.initialize()
+        _mt5_init()
     except Exception:
         pass
 
@@ -623,7 +628,7 @@ def ai_data():
 
 @router.get("/symbols")
 def list_symbols():
-    mt5.initialize()
+    _mt5_init()
     symbols = mt5.symbols_get()
     if symbols is None:
         return {"symbols": [], "error": str(mt5.last_error())}

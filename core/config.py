@@ -18,3 +18,15 @@ class Settings:
     SCALPING_TIMEFRAMES = ["1m", "3m", "5m"]
 
 settings = Settings()
+
+
+# ── Runtime config — set once at startup from CLI args ───────────────────────
+# All modules import `runtime` to get the live values (MT5 path, port, db).
+
+class RuntimeConfig:
+    mt5_path: str | None = None   # path to terminal64.exe — None = MT5 auto-detect
+    port:     int        = 8000   # HTTP port for this instance
+    db_path:  str        = "crypto_oracle.db"  # SQLite (unique per instance)
+    instance: str        = "default"           # label shown in logs
+
+runtime = RuntimeConfig()

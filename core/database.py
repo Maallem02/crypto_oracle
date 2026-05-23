@@ -1,9 +1,8 @@
 import sqlite3, hashlib, os
-
-DB_PATH = "crypto_oracle.db"
+from core.config import runtime
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(runtime.db_path)
     conn.row_factory = sqlite3.Row
     return conn
 

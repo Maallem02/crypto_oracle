@@ -1,5 +1,11 @@
 import MetaTrader5 as mt5
 from features.trading.risk_manager import calculate_lot_size, can_trade, get_daily_pnl_pct
+from core.config import runtime
+
+def _mt5_init():
+    """Initialize MT5 pointing to the configured terminal (multi-account support)."""
+    kwargs = {"path": runtime.mt5_path} if runtime.mt5_path else {}
+    mt5.initialize(**kwargs)
 
 # Mapping symboles → MT5
 SYMBOL_MAP = {
@@ -29,7 +35,7 @@ def place_trade(
     max_trades: int = 3,
 ) -> dict:
 
-    mt5.initialize()
+    _mt5_init()
 
     if not can_trade(max_trades):
         return {"success": False, "reason": "Max trades reached"}

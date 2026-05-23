@@ -1,12 +1,14 @@
 import MetaTrader5 as mt5
 import os
 from dotenv import load_dotenv
+from core.config import runtime
 
 load_dotenv()
 
 def connect():
-    if not mt5.initialize():
-        raise Exception("MT5 initialize failed")
+    kwargs = {"path": runtime.mt5_path} if runtime.mt5_path else {}
+    if not mt5.initialize(**kwargs):
+        raise Exception(f"MT5 initialize failed: {mt5.last_error()}")
     
     authorized = mt5.login(
         login=int(os.getenv("MT5_LOGIN")),
