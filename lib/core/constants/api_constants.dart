@@ -3,7 +3,7 @@ class ApiConstants {
 
   // ───  FastAPI Backend ───────────────────────────────────────────────
   // ← Change this to your Windows PC local IP (run ipconfig on Windows)
-  static const String baseUrl = 'http://192.168.1.105:8000';
+static const String baseUrl = 'http://192.168.0.129:8000';
 
   // Auth
   static const String register = '/auth/register';
