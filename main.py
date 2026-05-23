@@ -1,5 +1,7 @@
 import argparse
+import os
 import uvicorn
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -13,6 +15,16 @@ parser.add_argument("--mt5-path",  type=str, default=None,
 parser.add_argument("--instance",  type=str, default=None,
                     help="Instance label, e.g. 'account_A' (default: port number)")
 args, _ = parser.parse_known_args()   # parse_known_args = safe with uvicorn reload
+
+# ── Load the right .env file for this port ───────────────────────────────────
+# Priority: .env.<port>  →  .env  (fallback)
+env_file = f".env.{args.port}"
+if os.path.exists(env_file):
+    load_dotenv(env_file, override=True)
+    print(f"[ENV] Loaded {env_file}")
+else:
+    load_dotenv(".env", override=True)
+    print(f"[ENV] {env_file} not found — using .env fallback")
 
 # ── Apply to runtime config before any other import uses it ──────────────────
 from core.config import runtime
