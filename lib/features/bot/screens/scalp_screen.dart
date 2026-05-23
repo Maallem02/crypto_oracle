@@ -480,7 +480,8 @@ class _ScalpHistoryCard extends ConsumerWidget {
                   ]),
                 );
               }).toList(),
-        ),
+            ),
+        ),      // closes history.when(
       ]),
     );
   }
