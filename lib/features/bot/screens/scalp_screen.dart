@@ -368,12 +368,7 @@ class _LotSizesCard extends StatelessWidget {
   final ScalpNotifier ntf;
   const _LotSizesCard({required this.s, required this.ntf});
 
-  // step size per symbol type
-  static double _step(String sym) {
-    if (sym == 'BTC')    return 0.001;
-    if (sym == 'XAUUSD') return 0.01;
-    return 0.01;
-  }
+  static const double _step = 0.01;
 
   @override
   Widget build(BuildContext context) {
@@ -386,7 +381,6 @@ class _LotSizesCard extends StatelessWidget {
       child: Column(children: [
         ...s.enabledSymbols.map((sym) {
           final current = s.lotSizes[sym] ?? 0.0;
-          final step    = _step(sym);
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 8),
             child: Row(children: [
@@ -404,8 +398,8 @@ class _LotSizesCard extends StatelessWidget {
               // − button
               GestureDetector(
                 onTap: () {
-                  final next = (current - step).clamp(0.0, 100.0);
-                  ntf.setLotSize(sym, double.parse(next.toStringAsFixed(3)));
+                  final next = (current - _step).clamp(0.0, 100.0);
+                  ntf.setLotSize(sym, double.parse(next.toStringAsFixed(2)));
                 },
                 child: Container(
                   width: 32, height: 32,
@@ -428,8 +422,7 @@ class _LotSizesCard extends StatelessWidget {
                   ),
                   alignment: Alignment.center,
                   child: Text(
-                    current == 0 ? 'AUTO' : current.toStringAsFixed(
-                      sym == 'BTC' ? 3 : 2),
+                    current == 0 ? 'AUTO' : current.toStringAsFixed(2),
                     style: TextStyle(
                       color: current == 0 ? AppColors.textSecondary : AppColors.primary,
                       fontWeight: FontWeight.bold,
@@ -443,8 +436,8 @@ class _LotSizesCard extends StatelessWidget {
               // + button
               GestureDetector(
                 onTap: () {
-                  final next = (current + step).clamp(0.0, 100.0);
-                  ntf.setLotSize(sym, double.parse(next.toStringAsFixed(3)));
+                  final next = (current + _step).clamp(0.0, 100.0);
+                  ntf.setLotSize(sym, double.parse(next.toStringAsFixed(2)));
                 },
                 child: Container(
                   width: 32, height: 32,
