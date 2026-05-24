@@ -2,8 +2,8 @@ class ApiConstants {
   ApiConstants._();
 
   // ───  FastAPI Backend ───────────────────────────────────────────────
-  // ← Change this to your Windows PC local IP (run ipconfig on Windows)
-static const String baseUrl = 'http://192.168.0.129:8000';
+  // ngrok permanent URL — no need to change when switching networks
+  static const String baseUrl = 'https://ridden-curtain-reputably.ngrok-free.dev';
 
   // Auth
   static const String register = '/auth/register';
