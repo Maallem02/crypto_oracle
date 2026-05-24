@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
 import '../providers/scalp_provider.dart';
@@ -369,6 +368,13 @@ class _LotSizesCard extends StatelessWidget {
   final ScalpNotifier ntf;
   const _LotSizesCard({required this.s, required this.ntf});
 
+  // step size per symbol type
+  static double _step(String sym) {
+    if (sym == 'BTC')    return 0.001;
+    if (sym == 'XAUUSD') return 0.01;
+    return 0.01;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Container(
@@ -380,34 +386,96 @@ class _LotSizesCard extends StatelessWidget {
       child: Column(children: [
         ...s.enabledSymbols.map((sym) {
           final current = s.lotSizes[sym] ?? 0.0;
+          final step    = _step(sym);
           return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6),
+            padding: const EdgeInsets.symmetric(vertical: 8),
             child: Row(children: [
+
+              // Symbol name
               SizedBox(
-                width: 80,
+                width: 72,
                 child: Text(sym, style: const TextStyle(
-                  color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
+                  color: AppColors.textPrimary,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                )),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _LotField(
-                  value: current,
-                  onChanged: (v) => ntf.setLotSize(sym, v),
+
+              // − button
+              GestureDetector(
+                onTap: () {
+                  final next = (current - step).clamp(0.0, 100.0);
+                  ntf.setLotSize(sym, double.parse(next.toStringAsFixed(3)));
+                },
+                child: Container(
+                  width: 32, height: 32,
+                  decoration: BoxDecoration(
+                    color: AppColors.error.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.remove, color: AppColors.error, size: 18),
                 ),
               ),
-              const SizedBox(width: 8),
-              Text(
-                current == 0 ? 'AUTO' : 'FIXED',
-                style: TextStyle(
-                  color: current == 0 ? AppColors.textSecondary : AppColors.primary,
-                  fontSize: 11, fontWeight: FontWeight.bold,
+              const SizedBox(width: 10),
+
+              // Value display
+              Expanded(
+                child: Container(
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: AppColors.surface,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    current == 0 ? 'AUTO' : current.toStringAsFixed(
+                      sym == 'BTC' ? 3 : 2),
+                    style: TextStyle(
+                      color: current == 0 ? AppColors.textSecondary : AppColors.primary,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+
+              // + button
+              GestureDetector(
+                onTap: () {
+                  final next = (current + step).clamp(0.0, 100.0);
+                  ntf.setLotSize(sym, double.parse(next.toStringAsFixed(3)));
+                },
+                child: Container(
+                  width: 32, height: 32,
+                  decoration: BoxDecoration(
+                    color: AppColors.success.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.add, color: AppColors.success, size: 18),
+                ),
+              ),
+              const SizedBox(width: 10),
+
+              // Reset to AUTO (long press hint)
+              GestureDetector(
+                onTap: () => ntf.setLotSize(sym, 0),
+                child: Text(
+                  'AUTO',
+                  style: TextStyle(
+                    color: current == 0
+                      ? AppColors.primary
+                      : AppColors.textHint,
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ]),
           );
         }),
-        const SizedBox(height: 8),
-        const Text('Set 0 for automatic risk-based lot calculation',
+        const SizedBox(height: 10),
+        const Text('Tap AUTO to reset to risk-based calculation',
           style: TextStyle(color: AppColors.textHint, fontSize: 11)),
       ]),
     );
@@ -560,57 +628,3 @@ class _StepperField extends StatelessWidget {
   );
 }
 
-class _LotField extends StatefulWidget {
-  final double value;
-  final ValueChanged<double> onChanged;
-  const _LotField({required this.value, required this.onChanged});
-
-  @override
-  State<_LotField> createState() => _LotFieldState();
-}
-
-class _LotFieldState extends State<_LotField> {
-  late final TextEditingController _ctrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = TextEditingController(
-      text: widget.value == 0 ? '0' : widget.value.toStringAsFixed(2));
-  }
-
-  @override
-  void didUpdateWidget(_LotField old) {
-    super.didUpdateWidget(old);
-    if (old.value != widget.value) {
-      final formatted = widget.value == 0 ? '0' : widget.value.toStringAsFixed(2);
-      if (_ctrl.text != formatted) _ctrl.text = formatted;
-    }
-  }
-
-  @override
-  void dispose() { _ctrl.dispose(); super.dispose(); }
-
-  @override
-  Widget build(BuildContext context) => TextField(
-    controller: _ctrl,
-    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-    inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.]'))],
-    style: const TextStyle(color: AppColors.textPrimary, fontSize: 14),
-    decoration: InputDecoration(
-      filled: true,
-      fillColor: AppColors.surface,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(8),
-        borderSide: BorderSide.none,
-      ),
-      hintText: '0 = auto',
-      hintStyle: const TextStyle(color: AppColors.textHint, fontSize: 12),
-    ),
-    onChanged: (v) {
-      final parsed = double.tryParse(v);
-      if (parsed != null) widget.onChanged(parsed);
-    },
-  );
-}

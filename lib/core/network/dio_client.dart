@@ -17,11 +17,7 @@ class DioClient {
         baseUrl: ApiConstants.baseUrl,
         connectTimeout: const Duration(seconds: 10),
         receiveTimeout: const Duration(seconds: 10),
-        headers: {
-          'Content-Type': 'application/json',
-          // Required to bypass ngrok browser-warning interstitial page
-          'ngrok-skip-browser-warning': 'true',
-        },
+        headers: _ngrokHeaders,
       ),
     );
 
@@ -29,6 +25,26 @@ class DioClient {
     dio.interceptors.add(_AuthInterceptor());
 
     return dio;
+  }
+
+  // Shared headers for all Dio instances — required to bypass ngrok interstitial on Safari/iPhone
+  static const Map<String, String> _ngrokHeaders = {
+    'Content-Type': 'application/json',
+    'ngrok-skip-browser-warning': 'true',
+  };
+
+  /// Factory: creates a plain Dio pointing to [baseUrl] with ngrok headers.
+  /// Use this in repositories instead of creating a bare Dio().
+  static Dio create({
+    String? baseUrl,
+    Duration timeout = const Duration(seconds: 15),
+  }) {
+    return Dio(BaseOptions(
+      baseUrl: baseUrl ?? ApiConstants.baseUrl,
+      connectTimeout: timeout,
+      receiveTimeout: timeout,
+      headers: _ngrokHeaders,
+    ));
   }
 }
 

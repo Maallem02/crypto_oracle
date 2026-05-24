@@ -1,13 +1,9 @@
-import 'package:dio/dio.dart';
 import '../../../core/constants/api_constants.dart';
+import '../../../core/network/dio_client.dart';
 import '../../../core/storage/cache_storage.dart';
 
 class MarketRepository {
-  final Dio _dio = Dio(BaseOptions(
-    baseUrl: ApiConstants.coinGeckoBase,
-    connectTimeout: const Duration(seconds: 10),
-    receiveTimeout: const Duration(seconds: 10),
-  ));
+  final _dio = DioClient.create(baseUrl: ApiConstants.coinGeckoBase);
 
   Future<List<Map<String, dynamic>>> getMarkets() async {
     try {

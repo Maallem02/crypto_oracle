@@ -1,6 +1,5 @@
-import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../../core/constants/api_constants.dart';
+import '../../../core/network/dio_client.dart';
 
 class BotState {
   final bool isRunning;
@@ -41,7 +40,7 @@ class BotState {
 }
 
 class BotNotifier extends StateNotifier<BotState> {
-  final Dio _dio = Dio(BaseOptions(baseUrl: ApiConstants.baseUrl));
+  final _dio = DioClient.create();
   BotNotifier() : super(const BotState()) {
     _connectMT5();
   }
@@ -101,7 +100,7 @@ final botProvider = StateNotifierProvider<BotNotifier, BotState>(
 
 // Polling trades ouverts toutes les 10 secondes
 final openTradesProvider = StreamProvider.autoDispose<List>((ref) async* {
-  final dio = Dio(BaseOptions(baseUrl: ApiConstants.baseUrl));
+  final dio = DioClient.create();
   while (true) {
     try {
       final response = await dio.get('/trading/trades/open');
@@ -115,7 +114,7 @@ final openTradesProvider = StreamProvider.autoDispose<List>((ref) async* {
 
 // Historique des trades
 final tradeHistoryProvider = FutureProvider.autoDispose<List>((ref) async {
-  final dio      = Dio(BaseOptions(baseUrl: ApiConstants.baseUrl));
+  final dio      = DioClient.create();
   final response = await dio.get('/trading/bot/history');
   return response.data['history'] as List;
 });

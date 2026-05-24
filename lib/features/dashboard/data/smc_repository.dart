@@ -1,13 +1,9 @@
-import 'package:dio/dio.dart';
 import '../../../core/constants/api_constants.dart';
+import '../../../core/network/dio_client.dart';
 import '../../../core/storage/cache_storage.dart';
 
 class SmcRepository {
-  final Dio _dio = Dio(BaseOptions(
-    baseUrl: ApiConstants.baseUrl,
-    connectTimeout: const Duration(seconds: 15),
-    receiveTimeout: const Duration(seconds: 15),
-  ));
+  final _dio = DioClient.create();
 
   Future<Map<String, dynamic>> getAnalysis(String symbol, String timeframe) async {
     try {

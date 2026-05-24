@@ -1,15 +1,11 @@
 import 'package:dio/dio.dart';
-import '../../../core/constants/api_constants.dart';
 import '../../../core/errors/app_exceptions.dart';
+import '../../../core/network/dio_client.dart';
 import '../../../core/storage/secure_storage.dart';
 import '../../../models/user_model.dart';
 
 class AuthRepository {
-  final Dio _dio = Dio(BaseOptions(
-    baseUrl: ApiConstants.baseUrl,
-    connectTimeout: const Duration(seconds: 10),
-    receiveTimeout: const Duration(seconds: 10),
-  ));
+  final _dio = DioClient.create();
 
   Future<UserModel> register({
   required String username,
