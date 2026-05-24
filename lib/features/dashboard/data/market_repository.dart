@@ -3,7 +3,7 @@ import '../../../core/network/dio_client.dart';
 import '../../../core/storage/cache_storage.dart';
 
 class MarketRepository {
-  final _dio = DioClient.create(baseUrl: ApiConstants.coinGeckoBase);
+  final _dio = DioClient.createExternal(baseUrl: ApiConstants.coinGeckoBase);
 
   Future<List<Map<String, dynamic>>> getMarkets() async {
     try {

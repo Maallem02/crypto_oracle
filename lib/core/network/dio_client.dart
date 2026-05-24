@@ -33,8 +33,7 @@ class DioClient {
     'ngrok-skip-browser-warning': 'true',
   };
 
-  /// Factory: creates a plain Dio pointing to [baseUrl] with ngrok headers.
-  /// Use this in repositories instead of creating a bare Dio().
+  /// Factory for backend requests (through ngrok) — includes ngrok bypass header.
   static Dio create({
     String? baseUrl,
     Duration timeout = const Duration(seconds: 15),
@@ -44,6 +43,19 @@ class DioClient {
       connectTimeout: timeout,
       receiveTimeout: timeout,
       headers: _ngrokHeaders,
+    ));
+  }
+
+  /// Factory for external APIs (CoinGecko, TwelveData…) — NO ngrok header.
+  /// Adding ngrok-skip-browser-warning to external APIs triggers CORS preflight errors.
+  static Dio createExternal({
+    required String baseUrl,
+    Duration timeout = const Duration(seconds: 10),
+  }) {
+    return Dio(BaseOptions(
+      baseUrl: baseUrl,
+      connectTimeout: timeout,
+      receiveTimeout: timeout,
     ));
   }
 }
