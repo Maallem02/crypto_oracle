@@ -1,7 +1,15 @@
 import argparse
 import os
+import sys
+import io
 import uvicorn
 from dotenv import load_dotenv
+
+# Force UTF-8 output on Windows (prevents UnicodeEncodeError for arrows, emojis, etc.)
+if sys.stdout and hasattr(sys.stdout, 'buffer'):
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if sys.stderr and hasattr(sys.stderr, 'buffer'):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -28,10 +36,11 @@ else:
 
 # ── Apply to runtime config before any other import uses it ──────────────────
 from core.config import runtime
-runtime.port     = args.port
-runtime.mt5_path = args.mt5_path
-runtime.instance = args.instance or f"instance_{args.port}"
-runtime.db_path  = f"crypto_oracle_{args.port}.db"   # one DB per account
+runtime.port       = args.port
+runtime.mt5_path   = args.mt5_path
+runtime.instance   = args.instance or f"instance_{args.port}"
+runtime.db_path    = f"crypto_oracle_{args.port}.db"  # one DB per account
+runtime.ml_db_path = "crypto_oracle_ml.db"            # shared across all accounts
 
 print(f"[STARTUP] instance={runtime.instance}  port={runtime.port}  "
       f"mt5_path={runtime.mt5_path or 'auto'}  db={runtime.db_path}")
@@ -52,8 +61,10 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["*", "Authorization", "Content-Type", "ngrok-skip-browser-warning"],
+    allow_credentials=False,
+    max_age=3600,
 )
 
 scheduler = BackgroundScheduler()
@@ -61,8 +72,17 @@ scheduler = BackgroundScheduler()
 @app.on_event("startup")
 def startup():
     init_db()
-    scheduler.add_job(auto_scan,       'interval', minutes=6, id='auto_scan')
-    scheduler.add_job(scalp_auto_scan, 'interval', minutes=1, id='scalp_scan')
+    try:
+        from features.trading.ml_model import load_model
+        load_model()
+    except Exception as e:
+        print(f"[ML] Startup load skipped: {e}")
+    # coalesce=True  → si un tick est manqué, on l'exécute UNE seule fois (pas de rattrapage)
+    # misfire_grace_time → tolérance avant de considérer un tick comme manqué (en secondes)
+    scheduler.add_job(auto_scan,       'interval', minutes=3, id='auto_scan',
+                      coalesce=True, misfire_grace_time=60)
+    scheduler.add_job(scalp_auto_scan, 'interval', minutes=1, id='scalp_scan',
+                      coalesce=True, misfire_grace_time=30)
     scheduler.start()
 
 @app.on_event("shutdown")

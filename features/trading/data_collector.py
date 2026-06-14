@@ -3,8 +3,48 @@ Data Collector — Phase 2 : collecte des données pour entraîner le modèle IA
 Sauvegarde chaque signal + résultat (TP ou SL) dans SQLite
 """
 import MetaTrader5 as mt5
+import sqlite3
 from datetime import datetime, timedelta
 from core.database import get_db
+
+
+def get_ml_db():
+    """Returns connection to the SHARED ML database (all accounts combined)."""
+    from core.config import runtime
+    return sqlite3.connect(runtime.ml_db_path)
+
+
+def _ensure_ml_table(conn):
+    """Create trade_signals table in ML DB if not exists."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS trade_signals (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp       TEXT,
+            symbol          TEXT,
+            timeframe       TEXT,
+            action          TEXT,
+            scalping_score  REAL,
+            adx             REAL,
+            atr_ratio       REAL,
+            rsi             REAL,
+            stoch_k         REAL,
+            stoch_d         REAL,
+            structure       TEXT,
+            lg_strength     REAL,
+            pd_zone         TEXT,
+            pd_pct          REAL,
+            htf_consensus   TEXT,
+            hour            INTEGER,
+            day_of_week     INTEGER,
+            rr_ratio        REAL,
+            entry           REAL,
+            ticket          INTEGER UNIQUE,
+            outcome         INTEGER,
+            profit          REAL,
+            closed_at       TEXT,
+            instance        TEXT
+        )
+    """)
 
 
 def init_signals_table():
@@ -82,16 +122,9 @@ def save_signal(
     lg  = analysis.get("liquidity_grab", {})
     pd  = analysis.get("premium_discount", {})
 
-    conn = get_db()
-    conn.execute("""
-        INSERT INTO trade_signals
-        (timestamp, symbol, timeframe, action,
-         scalping_score, adx, atr, atr_ratio, rsi, stoch_k, stoch_d,
-         structure, lg_strength, pd_zone, pd_pct,
-         htf_consensus, hour, day_of_week, rr_ratio,
-         entry, sl, tp1, ticket)
-        VALUES (?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?)
-    """, (
+    from core.config import runtime
+
+    values = (
         now.isoformat(), symbol, timeframe, analysis.get("bias"),
         analysis.get("scalping_score"),
         analysis.get("adx"),
@@ -112,9 +145,60 @@ def save_signal(
         entry_data.get("sl"),
         entry_data.get("tp1"),
         trade_result.get("ticket"),
-    ))
+    )
+
+    sql = """
+        INSERT INTO trade_signals
+        (timestamp, symbol, timeframe, action,
+         scalping_score, adx, atr, atr_ratio, rsi, stoch_k, stoch_d,
+         structure, lg_strength, pd_zone, pd_pct,
+         htf_consensus, hour, day_of_week, rr_ratio,
+         entry, sl, tp1, ticket)
+        VALUES (?,?,?,?, ?,?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?,?,?)
+    """
+
+    # Save to own account DB
+    conn = get_db()
+    conn.execute(sql, values)
     conn.commit()
     conn.close()
+
+    # Save to shared ML DB (all accounts combined)
+    try:
+        ml_conn = get_ml_db()
+        _ensure_ml_table(ml_conn)
+        ml_conn.execute("""
+            INSERT OR IGNORE INTO trade_signals
+            (timestamp, symbol, timeframe, action,
+             scalping_score, adx, atr_ratio, rsi, stoch_k, stoch_d,
+             structure, lg_strength, pd_zone, pd_pct,
+             htf_consensus, hour, day_of_week, rr_ratio,
+             entry, ticket, instance)
+            VALUES (?,?,?,?, ?,?,?,?,?,?, ?,?,?,?, ?,?,?,?, ?,?, ?)
+        """, (
+            now.isoformat(), symbol, timeframe, analysis.get("bias"),
+            analysis.get("scalping_score"),
+            analysis.get("adx"),
+            analysis.get("atr_ratio"),
+            analysis.get("rsi"),
+            analysis.get("stoch_k"),
+            analysis.get("stoch_d"),
+            analysis.get("structure", {}).get("trend"),
+            lg.get("strength", 0),
+            pd.get("zone"),
+            pd.get("position_pct"),
+            htf_consensus,
+            now.hour,
+            now.weekday(),
+            entry_data.get("rr_ratio"),
+            entry_data.get("entry"),
+            trade_result.get("ticket"),
+            runtime.instance,
+        ))
+        ml_conn.commit()
+        ml_conn.close()
+    except Exception as e:
+        print(f"[ML-DB] Failed to save to shared ML DB: {e}")
 
 
 def check_and_update_outcomes():
@@ -147,10 +231,23 @@ def check_and_update_outcomes():
 
             if row:
                 outcome = 1 if deal.profit > 0 else 0
+                params  = (outcome, round(deal.profit, 2), datetime.now().isoformat(), deal.position_id)
+                # Update own DB
                 conn.execute(
                     "UPDATE trade_signals SET outcome=?, profit=?, closed_at=? WHERE ticket=?",
-                    (outcome, round(deal.profit, 2), datetime.now().isoformat(), deal.position_id)
+                    params
                 )
+                # Update shared ML DB
+                try:
+                    ml_conn = get_ml_db()
+                    ml_conn.execute(
+                        "UPDATE trade_signals SET outcome=?, profit=?, closed_at=? WHERE ticket=?",
+                        params
+                    )
+                    ml_conn.commit()
+                    ml_conn.close()
+                except Exception:
+                    pass
 
         conn.commit()
         conn.close()
@@ -189,16 +286,23 @@ def get_stats() -> dict:
 
 
 def get_training_data() -> list:
-    """Retourne les données labellisées pour entraîner le modèle IA"""
-    conn = get_db()
+    """Returns labeled data from the SHARED ML DB (all accounts combined)."""
+    try:
+        conn = get_ml_db()
+        _ensure_ml_table(conn)
+    except Exception:
+        conn = get_db()  # fallback to own DB
     rows = conn.execute("""
-        SELECT scalping_score, adx, atr, atr_ratio, rsi, stoch_k, stoch_d,
+        SELECT scalping_score, adx, atr_ratio, rsi, stoch_k, stoch_d,
                structure, lg_strength, pd_zone, pd_pct,
                htf_consensus, hour, day_of_week, rr_ratio,
-               symbol, timeframe, action, outcome
+               action, outcome
         FROM trade_signals
         WHERE outcome IS NOT NULL
         ORDER BY timestamp DESC
     """).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    cols = ["scalping_score","adx","atr_ratio","rsi","stoch_k","stoch_d",
+            "structure","lg_strength","pd_zone","pd_pct",
+            "htf_consensus","hour","day_of_week","rr_ratio","action","outcome"]
+    return [dict(zip(cols, r)) for r in rows]

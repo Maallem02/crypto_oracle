@@ -1,0 +1,56 @@
+{
+  "scoring_weights": {
+    "stoch": 17.3,
+    "rsi": 8.3,
+    "adx": 7.3,
+    "atr_ratio": 6.1,
+    "lg_strength": 6.0,
+    "pd_pct": 5.4,
+    "rr_ratio": 5.0,
+    "htf": 1.6,
+    "structure": 1.5,
+    "pd_zone": 1.5
+  },
+  "thresholds": {
+    "rsi_max_buy": 70,
+    "rsi_min_sell": 30,
+    "stoch_max_buy": 80,
+    "stoch_min_sell": 20,
+    "adx_min": 15
+  },
+  "symbol_performance": {
+    "BTC_15m": {
+      "win_rate": 0.475,
+      "trades": 61,
+      "priority": 0.95
+    },
+    "BTC_5m": {
+      "win_rate": 0.475,
+      "trades": 59,
+      "priority": 0.95
+    },
+    "ETH_15m": {
+      "win_rate": 0.506,
+      "trades": 77,
+      "priority": 1.01
+    },
+    "ETH_5m": {
+      "win_rate": 0.329,
+      "trades": 85,
+      "priority": 0.66
+    },
+    "GBPJPY_5m": {
+      "win_rate": 0.467,
+      "trades": 30,
+      "priority": 0.93
+    },
+    "XAUUSD_15m": {
+      "win_rate": 0.684,
+      "trades": 19,
+      "priority": 1.37
+    }
+  },
+  "blend_factor": 20,
+  "updated_at": "2026-06-14T10:16:57.284717",
+  "source": "ml_retrain"
+}

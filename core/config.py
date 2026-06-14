@@ -24,9 +24,10 @@ settings = Settings()
 # All modules import `runtime` to get the live values (MT5 path, port, db).
 
 class RuntimeConfig:
-    mt5_path: str | None = None   # path to terminal64.exe — None = MT5 auto-detect
-    port:     int        = 8000   # HTTP port for this instance
-    db_path:  str        = "crypto_oracle.db"  # SQLite (unique per instance)
-    instance: str        = "default"           # label shown in logs
+    mt5_path:    str | None = None   # path to terminal64.exe — None = MT5 auto-detect
+    port:        int        = 8000   # HTTP port for this instance
+    db_path:     str        = "crypto_oracle.db"       # SQLite per instance (trade log)
+    ml_db_path:  str        = "crypto_oracle_ml.db"    # SHARED ML database (all accounts)
+    instance:    str        = "default"                # label shown in logs
 
 runtime = RuntimeConfig()

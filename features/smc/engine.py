@@ -107,54 +107,54 @@ def compute_confluence_score(
     # 1. Structure de marché (20pts)
     if structure["trend"] != "neutral":
         score += 20
-        conditions.append(f"✅ Structure {structure['trend']}")
+        conditions.append(f"[OK] Structure {structure['trend']}")
     else:
-        conditions.append("❌ Structure neutral")
+        conditions.append("[NO] Structure neutral")
 
     # 2. CHoCH détecté (10pts bonus)
     if structure.get("last_choch"):
         score += 10
-        conditions.append(f"✅ CHoCH: {structure['last_choch']}")
+        conditions.append(f"[OK] CHoCH: {structure['last_choch']}")
 
     # 3. Prix dans la bonne zone P/D (20pts) ← NOUVEAU
     if is_valid_zone_for_trade(pd_zone, bias):
         score += 20
-        conditions.append(f"✅ {pd_zone['zone']} zone ({pd_zone['position_pct']}%)")
+        conditions.append(f"[OK] {pd_zone['zone']} zone ({pd_zone['position_pct']}%)")
     else:
-        conditions.append(f"❌ Wrong zone: {pd_zone['zone']} ({pd_zone['position_pct']}%)")
+        conditions.append(f"[NO] Wrong zone: {pd_zone['zone']} ({pd_zone['position_pct']}%)")
 
     # 4. Order Block aligné (15pts)
     ob_count = len([ob for ob in obs if ob['type'] == bias.replace('sell', 'bearish').replace('buy', 'bullish') and not ob['mitigated']])
     if ob_count > 0:
         score += 15
-        conditions.append(f"✅ {ob_count} Order Block(s) aligned")
+        conditions.append(f"[OK] {ob_count} Order Block(s) aligned")
     else:
-        conditions.append("❌ No aligned Order Block")
+        conditions.append("[NO] No aligned Order Block")
 
     # 5. FVG non rempli (10pts)
     fvg_aligned = [f for f in fvgs if f['type'] == ('bullish' if bias == 'buy' else 'bearish') and not f['filled']]
     if fvg_aligned:
         score += 10
-        conditions.append(f"✅ {len(fvg_aligned)} FVG(s) unfilled")
+        conditions.append(f"[OK] {len(fvg_aligned)} FVG(s) unfilled")
     else:
-        conditions.append("❌ No aligned FVG")
+        conditions.append("[NO] No aligned FVG")
 
     # 6. OTE dans la zone (15pts)
     if ote and ote.get("in_zone"):
         score += 15
-        conditions.append(f"✅ Price in OTE zone (R:R {ote['rr_ratio']})")
+        conditions.append(f"[OK] Price in OTE zone (R:R {ote['rr_ratio']})")
     elif ote:
         score += 5
-        conditions.append(f"⚠️ OTE exists but price not in zone")
+        conditions.append(f"[!] OTE exists but price not in zone")
     else:
-        conditions.append("❌ No OTE")
+        conditions.append("[NO] No OTE")
 
     # 7. Liquidity Grab ← NOUVEAU (10pts)
     if liquidity_grab.get("detected") and liquidity_grab.get("type") == ('bullish' if bias == 'buy' else 'bearish'):
         score += 10
-        conditions.append(f"✅ Liquidity Grab detected ({liquidity_grab['type']})")
+        conditions.append(f"[OK] Liquidity Grab detected ({liquidity_grab['type']})")
     else:
-        conditions.append("❌ No Liquidity Grab")
+        conditions.append("[NO] No Liquidity Grab")
 
     return round(score, 1), conditions
 
@@ -296,10 +296,10 @@ def calculate_atr(df: pd.DataFrame, period: int = 14) -> float:
 def run_scalping_analysis(df: pd.DataFrame) -> dict:
     """
     Analyse scalping améliorée :
-    ✅ Liquidity Grab uniquement (Micro BOS supprimé — trop de faux signaux)
-    ✅ SL/TP basés sur ATR (s'adapte à la volatilité)
-    ✅ Score minimum 80 (plus strict)
-    ✅ Structure doit confirmer (pas de contre-tendance)
+    [OK] Liquidity Grab uniquement (Micro BOS supprimé — trop de faux signaux)
+    [OK] SL/TP basés sur ATR (s'adapte à la volatilité)
+    [OK] Score minimum 80 (plus strict)
+    [OK] Structure doit confirmer (pas de contre-tendance)
     """
     if len(df) < 20:
         return {"error": "Pas assez de données (minimum 20 bougies)"}
@@ -325,11 +325,13 @@ def run_scalping_analysis(df: pd.DataFrame) -> dict:
         })
 
     # ── Filtre ATR ratio : volatilité anormale → skip ────────────────────
-    if atr_ratio > 2.5:
+    # Seuil abaissé de 2.5 → 1.8 : l'ancien seuil laissait passer les périodes
+    # London/NY où l'ATR court = 1.5–2× l'ATR long → SL trop larges + faux LG.
+    if atr_ratio > 1.8:
         return to_python({
             "current_price":  current_price,
             "scalping_score": 0,
-            "conditions":     [f"❌ Volatilité trop haute (ATR ratio: {atr_ratio})"],
+            "conditions":     [f"[NO] Volatilité trop haute (ATR ratio: {atr_ratio} > 1.8)"],
             "should_scalp":   False,
             "bias":           "neutral",
             "adx":            adx,
@@ -340,7 +342,7 @@ def run_scalping_analysis(df: pd.DataFrame) -> dict:
         return to_python({
             "current_price":  current_price,
             "scalping_score": 0,
-            "conditions":     [f"❌ Volatilité trop faible (ATR ratio: {atr_ratio})"],
+            "conditions":     [f"[NO] Volatilité trop faible (ATR ratio: {atr_ratio})"],
             "should_scalp":   False,
             "bias":           "neutral",
             "adx":            adx,
@@ -355,21 +357,62 @@ def run_scalping_analysis(df: pd.DataFrame) -> dict:
 
     sh = structure.get("last_swing_high")
     sl = structure.get("last_swing_low")
-    pd_zone = get_premium_discount(
-        sl or current_price * 0.99,
-        sh or current_price * 1.01,
-        current_price,
-    )
+
+    # ── Load dynamic weights from ta_config.json (set by ML after each retrain) ─
+    try:
+        from features.trading.ta_optimizer import get_config as _get_ta_config
+        _ta_cfg    = _get_ta_config()
+        _w         = _ta_cfg.get("scoring_weights", {})
+        _thr       = _ta_cfg.get("thresholds", {})
+    except Exception:
+        _w   = {}
+        _thr = {}
+
+    def _w_(key, default):
+        return float(_w.get(key, default))
+
+    W_RSI      = _w_("rsi",        25.0)
+    W_STOCH    = _w_("stoch",      25.0)
+    W_STRUCT   = _w_("structure",  10.0)
+    W_ADX      = _w_("adx",         0.0)
+    W_LG_STR   = _w_("lg_strength", 0.0)
+    W_ATR      = _w_("atr_ratio",   0.0)
+    W_PD_PCT   = _w_("pd_pct",      0.0)
+    W_HTF      = _w_("htf",         0.0)
+    W_PD_ZONE  = _w_("pd_zone",     0.0)
+
+    RSI_MAX_BUY   = _thr.get("rsi_max_buy",   70)
+    RSI_MIN_SELL  = _thr.get("rsi_min_sell",  30)
+    STOCH_MAX_BUY = _thr.get("stoch_max_buy", 80)
+    STOCH_MIN_SEL = _thr.get("stoch_min_sell",20)
 
     score      = 0
     conditions = []
 
-    # ── Signal obligatoire : Liquidity Grab ─────────────────── 50pts
+    # ── Signal obligatoire : Liquidity Grab ────────────────── 50pts (fixed)
     if not liquidity_grab.get("detected"):
         return to_python({
             "current_price":  current_price,
             "scalping_score": 0,
-            "conditions":     [f"❌ No Liquidity Grab"],
+            "conditions":     ["No Liquidity Grab"],
+            "should_scalp":   False,
+            "bias":           "neutral",
+            "adx":            adx,
+            "atr":            round(atr, 5),
+            "atr_ratio":      atr_ratio,
+            "rsi":            rsi,
+            "stoch_k":        stoch_k,
+            "stoch_d":        stoch_d,
+            "structure":      structure,
+        })
+
+    # Reject weak LG — strength < 0.07 means price barely swept the level (fake grab)
+    lg_strength = float(liquidity_grab.get("strength", 0))
+    if lg_strength < 0.07:
+        return to_python({
+            "current_price":  current_price,
+            "scalping_score": 0,
+            "conditions":     [f"LG too weak (str={lg_strength:.2f} < 0.07)"],
             "should_scalp":   False,
             "bias":           "neutral",
             "adx":            adx,
@@ -382,41 +425,135 @@ def run_scalping_analysis(df: pd.DataFrame) -> dict:
         })
 
     score += 50
-    bias   = "buy" if liquidity_grab["type"] == "bullish" else "sell"
-    conditions.append(f"✅ LG {liquidity_grab['type']} @ {liquidity_grab['grabbed_level']}")
+    bias = "buy" if liquidity_grab["type"] == "bullish" else "sell"
+    conditions.append(f"LG {liquidity_grab['type']} str={lg_strength:.2f}")
 
-    # ── RSI confirme ─────────────────────────────────────────── 25pts
-    # BUY : RSI pas suracheté (< 70) — idéalement sous 55 = momentum pas épuisé
-    # SELL: RSI pas survendu  (> 30) — idéalement au-dessus de 45
-    rsi_aligned = (bias == "buy" and rsi < 70) or (bias == "sell" and rsi > 30)
+    # ── Hard Zone Filter: only trade from extremes, never mid-range ──────────
+    # BUY  only from discount zone  (price in bottom 35% of range)
+    # SELL only from premium zone   (price in top 35% of range)
+    # Middle of range = no edge, wide SL, low confidence → reject
+    _pd_check = get_premium_discount(
+        sl or current_price * 0.99,
+        sh or current_price * 1.01,
+        current_price,
+    )
+    _pd_pos  = _pd_check.get("position_pct", 50)
+    _pd_name = _pd_check.get("zone", "equilibrium")
+
+    if bias == "buy" and _pd_pos > 40:
+        return to_python({
+            "current_price":  current_price,
+            "scalping_score": 0,
+            "conditions":     [f"Mid/Premium zone for BUY ({_pd_name} {_pd_pos:.0f}%) - wait for discount"],
+            "should_scalp":   False,
+            "bias":           "neutral",
+            "adx": adx, "atr": round(atr,5), "atr_ratio": atr_ratio,
+            "rsi": rsi, "stoch_k": stoch_k, "stoch_d": stoch_d,
+            "structure": structure,
+        })
+
+    if bias == "sell" and _pd_pos < 60:
+        return to_python({
+            "current_price":  current_price,
+            "scalping_score": 0,
+            "conditions":     [f"Mid/Discount zone for SELL ({_pd_name} {_pd_pos:.0f}%) - wait for premium"],
+            "should_scalp":   False,
+            "bias":           "neutral",
+            "adx": adx, "atr": round(atr,5), "atr_ratio": atr_ratio,
+            "rsi": rsi, "stoch_k": stoch_k, "stoch_d": stoch_d,
+            "structure": structure,
+        })
+
+    # ── LG strength bonus (ML-weighted) ────────────────────── dynamic
+    if W_LG_STR > 0 and lg_strength > 0:
+        lg_pts = round(min(W_LG_STR, W_LG_STR * lg_strength), 1)
+        score += lg_pts
+        conditions.append(f"LG strength +{lg_pts:.1f}pts")
+
+    # ── RSI confirms (ML-weighted) ──────────────────────────── dynamic
+    rsi_aligned = (bias == "buy" and rsi < RSI_MAX_BUY) or \
+                  (bias == "sell" and rsi > RSI_MIN_SELL)
     if rsi_aligned:
-        score += 25
-        conditions.append(f"RSI {rsi} OK for {bias}")
+        score += W_RSI
+        conditions.append(f"RSI {rsi} OK ({'+'+str(round(W_RSI,1))}pts)")
     else:
         conditions.append(f"RSI {rsi} blocked {bias}")
 
-    # ── Stochastique confirme ────────────────────────────────── 25pts
-    # BUY : stoch pas en territoire suracheté  (< 80)
-    # SELL: stoch pas en territoire survendu   (> 20)
-    # Bonus +5 si croisement K > D (buy) ou K < D (sell)
-    stoch_aligned = (bias == "buy" and stoch_k < 80) or (bias == "sell" and stoch_k > 20)
-    stoch_cross   = (bias == "buy" and stoch_k > stoch_d) or (bias == "sell" and stoch_k < stoch_d)
+    # ── Stochastic confirms (ML-weighted) ───────────────────── dynamic
+    stoch_aligned = (bias == "buy"  and stoch_k < STOCH_MAX_BUY) or \
+                    (bias == "sell" and stoch_k > STOCH_MIN_SEL)
+    stoch_cross   = (bias == "buy"  and stoch_k > stoch_d) or \
+                    (bias == "sell" and stoch_k < stoch_d)
     if stoch_aligned:
-        score += 20
-        conditions.append(f"Stoch %K {stoch_k} OK for {bias}")
+        stoch_base  = round(W_STOCH * 0.8, 1)   # 80% for alignment
+        stoch_bonus = round(W_STOCH * 0.2, 1)   # 20% bonus for cross
+        score += stoch_base
+        conditions.append(f"Stoch {stoch_k:.0f} OK (+{stoch_base}pts)")
         if stoch_cross:
-            score += 5
-            conditions.append(f"Stoch cross {stoch_k:.1f}/{stoch_d:.1f} confirms {bias}")
+            score += stoch_bonus
+            conditions.append(f"Stoch cross +{stoch_bonus}pts")
     else:
-        conditions.append(f"Stoch %K {stoch_k} blocked {bias}")
+        conditions.append(f"Stoch {stoch_k:.0f} blocked {bias}")
 
-    # ── Bonus structure ──────────────────────────────────────── +10pts
+    # ── ADX trend strength (ML-weighted) ────────────────────── dynamic
+    if W_ADX > 0:
+        # Proportional: ADX 15→20 = 0%, ADX 30+ = 100%
+        adx_pct = min(1.0, max(0.0, (adx - 15) / 20.0))
+        adx_pts = round(W_ADX * adx_pct, 1)
+        if adx_pts > 0:
+            score += adx_pts
+            conditions.append(f"ADX {adx:.0f} +{adx_pts}pts")
+
+    # ── ATR ratio quality (ML-weighted) ─────────────────────── dynamic
+    if W_ATR > 0:
+        # Best ATR ratio is 0.8–1.2 (healthy volatility)
+        atr_quality = 1.0 - min(1.0, abs(atr_ratio - 1.0))
+        atr_pts = round(W_ATR * atr_quality, 1)
+        if atr_pts > 0:
+            score += atr_pts
+            conditions.append(f"ATR ratio {atr_ratio:.2f} +{atr_pts}pts")
+
+    # ── Premium/Discount position (ML-weighted) ──────────────── dynamic
+    if W_PD_PCT > 0:
+        pd_zone_info = get_premium_discount(
+            sl or current_price * 0.99,
+            sh or current_price * 1.01,
+            current_price,
+        )
+        pd_pos = pd_zone_info.get("position_pct", 50)
+        # Buy in discount (pos_pct < 40) = full points; buy in premium = 0
+        # Sell in premium (pos_pct > 60) = full points; sell in discount = 0
+        if bias == "buy":
+            pd_quality = max(0.0, (40 - pd_pos) / 40.0)
+        else:
+            pd_quality = max(0.0, (pd_pos - 60) / 40.0)
+        pd_pts = round(W_PD_PCT * pd_quality, 1)
+        if pd_pts > 0:
+            score += pd_pts
+            conditions.append(f"PD {pd_pos:.0f}% +{pd_pts}pts")
+        # Keep pd_zone for return value
+    else:
+        pd_zone_info = get_premium_discount(
+            sl or current_price * 0.99,
+            sh or current_price * 1.01,
+            current_price,
+        )
+
+    # ── Structure confirms (ML-weighted) ─────────────────────── dynamic
     if (bias == "buy"  and structure["trend"] == "bullish") or \
        (bias == "sell" and structure["trend"] == "bearish"):
-        score += 10
-        conditions.append(f"✅ Structure {structure['trend']} (bonus +10)")
+        score += W_STRUCT
+        conditions.append(f"Structure {structure['trend']} +{round(W_STRUCT,1)}pts")
     else:
-        conditions.append(f"ℹ️ Structure {structure['trend']}")
+        conditions.append(f"Structure {structure['trend']}")
+
+    # ── PD zone type bonus (ML-weighted) ─────────────────────── dynamic
+    if W_PD_ZONE > 0:
+        pz = pd_zone_info.get("zone", "")
+        if (bias == "buy"  and "discount" in pz) or \
+           (bias == "sell" and "premium"  in pz):
+            score += W_PD_ZONE
+            conditions.append(f"PD zone {pz} +{round(W_PD_ZONE,1)}pts")
 
     # ── Calcul entrée + SL/TP ────────────────────────────────────────────────
     # IMPORTANT : on entre AU MARCHÉ (current_price), pas au grabbed_level.
@@ -427,16 +564,26 @@ def run_scalping_analysis(df: pd.DataFrame) -> dict:
         entry_price = current_price  # TOUJOURS le prix actuel (market order)
 
         if bias == "buy":
-            # SL = le plus serré entre : SL structure (mèche) et 1.5×ATR
-            sl_struct = scalping_entry["sl"]          # derrière la mèche
+            # SL = le PLUS LARGE (le plus bas) entre : SL structure et 1.5×ATR
+            # → min() car SL buy est sous l'entrée : on veut la valeur la PLUS BASSE
+            # → Garde min 1.5×ATR de distance pour éviter les SL trop serrés
+            # → PLAFOND 2×ATR : évite des SL trop larges (ex: BTC -$7/trade)
+            sl_struct = scalping_entry["sl"]              # derrière la mèche (sous entry)
             sl_atr    = round(entry_price - atr * 1.5, 5)
-            new_sl    = max(sl_struct, sl_atr)        # le plus haut des deux (le moins loin)
+            new_sl    = min(sl_struct, sl_atr)            # le plus bas (le plus large)
+            sl_cap    = round(entry_price - atr * 2.0, 5) # plafond 2×ATR (= sol dur)
+            new_sl    = max(new_sl, sl_cap)               # ramène si trop large ✓
             new_tp1   = round(entry_price + atr * 2.0, 5)
             new_tp2   = round(entry_price + atr * 3.5, 5)
         else:
-            sl_struct = scalping_entry["sl"]
+            # SL = le PLUS LARGE (le plus haut) entre : SL structure et 1.5×ATR
+            # → max() car SL sell est au-dessus de l'entrée : on veut la valeur la PLUS HAUTE
+            # → PLAFOND 2×ATR : évite des SL trop larges
+            sl_struct = scalping_entry["sl"]              # derrière la mèche (au-dessus entry)
             sl_atr    = round(entry_price + atr * 1.5, 5)
-            new_sl    = min(sl_struct, sl_atr)        # le plus bas des deux
+            new_sl    = max(sl_struct, sl_atr)            # le plus haut (le plus large)
+            sl_cap    = round(entry_price + atr * 2.0, 5) # plafond 2×ATR (= plafond dur)
+            new_sl    = min(new_sl, sl_cap)               # ramène si trop large ✓
             new_tp1   = round(entry_price - atr * 2.0, 5)
             new_tp2   = round(entry_price - atr * 3.5, 5)
 
@@ -463,7 +610,7 @@ def run_scalping_analysis(df: pd.DataFrame) -> dict:
         "bias":             bias,
         "liquidity_grab":   liquidity_grab,
         "scalping_entry":   scalping_entry,
-        "premium_discount": pd_zone,
+        "premium_discount": pd_zone_info,
         "structure":        structure,
         "adx":              adx,
         "atr":              round(atr, 5),

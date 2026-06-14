@@ -8,12 +8,14 @@ def calculate_lot_size(
     """
     Calcule le lot size en fonction du risque.
 
-    Formule :
-        lot = (balance × risk_pct / 100) / (sl_ticks × tick_value)
+    Pour paires USD (BTC/USD, ETH/USD, XAU/USD …) :
+        risque_$ = lot × contract_size × (sl_ticks × tick_size)
+        → lot = risk_$ / (contract_size × sl_distance)
+        Formule directe, indépendante de trade_tick_value qui est souvent
+        mal renseigné sur les comptes micro de certains brokers.
 
-    Où :
-        sl_ticks   = abs(entry_price - sl_price) / trade_tick_size
-        tick_value = trade_tick_value  (profit/perte en $ par tick pour 1 lot)
+    Pour cross-pairs (GBP/JPY …) :
+        lot = risk_$ / (sl_ticks × tick_value)   ← formule classique
     """
     account = mt5.account_info()
     if account is None:
@@ -21,12 +23,27 @@ def calculate_lot_size(
     balance     = account.balance
     risk_amount = balance * (risk_percent / 100)
     symbol_info = mt5.symbol_info(symbol)
-    if not symbol_info:
+    if not symbol_info or sl_ticks == 0:
         return 0.01
-    tick_value = symbol_info.trade_tick_value
-    if tick_value == 0 or sl_ticks == 0:
+
+    tick_size = symbol_info.trade_tick_size if symbol_info.trade_tick_size > 0 else 0.01
+    sl_distance = sl_ticks * tick_size          # distance en unités de prix
+
+    # Paires cotées en USD : risque direct en $ = lot × contract_size × sl_distance
+    if symbol.upper().endswith(('USD', 'USDM')):
+        cs = symbol_info.trade_contract_size if symbol_info.trade_contract_size > 0 else 1.0
+        denominator = cs * sl_distance
+    else:
+        # Cross-pairs (GBPJPY…) : utiliser trade_tick_value
+        tick_value = symbol_info.trade_tick_value
+        if tick_value == 0:
+            return 0.01
+        denominator = sl_ticks * tick_value
+
+    if denominator == 0:
         return 0.01
-    lot_size = risk_amount / (sl_ticks * tick_value)
+
+    lot_size = risk_amount / denominator
     lot_size = max(symbol_info.volume_min, lot_size)
     lot_size = min(symbol_info.volume_max, lot_size)
     lot_size = round(lot_size, 2)
@@ -77,5 +94,7 @@ def get_daily_pnl_pct() -> float:
     if positions:
         unrealized = sum(p.profit for p in positions if p.magic == BOT_MAGIC)
 
-    total_pct = round((realized + unrealized) / account.balance * 100, 2)
+    # Use realized PnL only — unrealized fluctuates and can prematurely
+    # stop the bot while a trade is in normal drawdown before recovering.
+    total_pct = round(realized / account.balance * 100, 2)
     return total_pct

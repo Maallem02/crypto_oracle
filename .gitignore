@@ -1,5 +1,6 @@
 # Environment variables — never commit real credentials
 .env
+.env.*
 .env.local
 .env.*.local
 
@@ -26,6 +27,10 @@ build/
 
 # Logs
 *.log
+history.txt
+
+# ML model binary (large file)
+*.pkl
 
 # IDE
 .vscode/
