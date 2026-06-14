@@ -278,7 +278,7 @@ class _SettingsCard extends StatelessWidget {
         _SliderRow(
           label: 'Max Daily Loss %',
           value: s.maxDailyLossPct,
-          min: 0, max: 10, divisions: 20,
+          min: 0, max: 50, divisions: 100,
           display: s.maxDailyLossPct == 0 ? 'OFF' : '${s.maxDailyLossPct.toStringAsFixed(1)}%',
           color: AppColors.error,
           onChanged: ntf.setMaxDailyLoss,

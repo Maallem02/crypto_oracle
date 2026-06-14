@@ -2,8 +2,17 @@ class ApiConstants {
   ApiConstants._();
 
   // ───  FastAPI Backend ───────────────────────────────────────────────
-  // ngrok permanent URL — no need to change when switching networks
-  static const String baseUrl = 'https://ridden-curtain-reputably.ngrok-free.dev';
+  // Account 1 — permanent ngrok URL
+  static const String baseUrl   = 'https://ridden-curtain-reputably.ngrok-free.dev';
+
+  // ─── Multi-account support ───────────────────────────────────────────────
+  // Add/remove accounts here. url2 gets a random ngrok URL (update after each restart)
+  // or upgrade ngrok ($8/mo) to get a second static domain.
+  static const List<Map<String, String>> accounts = [
+    {'name': 'Compte 1', 'url': 'https://ridden-curtain-reputably.ngrok-free.dev'},
+    // Compte 2 disabled — ngrok free plan only supports 1 tunnel
+    // Re-enable when second tunnel is available (cloudflare or ngrok paid)
+  ];
 
   // Auth
   static const String register = '/auth/register';

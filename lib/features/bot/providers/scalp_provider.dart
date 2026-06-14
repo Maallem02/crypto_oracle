@@ -1,4 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../../core/constants/api_constants.dart';
 import '../../../core/network/dio_client.dart';
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -15,6 +16,7 @@ class ScalpState {
   final int cooldownMinutes;
   final List<String> htfTimeframe;
   final Map<String, double> lotSizes;   // symbol → fixed lot (0 = auto)
+  final double mlThreshold;             // 0 = disabled, 0.62 = only trade if win_prob >= 62%
 
   // Live status
   final int tradesToday;
@@ -25,19 +27,20 @@ class ScalpState {
 
   const ScalpState({
     this.isRunning        = false,
-    this.riskPercent      = 0.6,
-    this.minScore         = 85.0,
-    this.maxTrades        = 5,
-    this.maxDailyTrades   = 20,
-    this.maxDailyLossPct  = 2.0,
-    this.enabledSymbols   = const ['BTC', 'ETH', 'SOL', 'XAUUSD', 'GBPJPY'],
-    this.enabledTimeframes= const ['5m', '15m'],
+    this.riskPercent      = 0.5,
+    this.minScore         = 88.0,
+    this.maxTrades        = 3,
+    this.maxDailyTrades   = 0,
+    this.maxDailyLossPct  = 50.0,
+    this.enabledSymbols   = const ['BTC', 'ETH', 'XAUUSD', 'GBPJPY'],
+    this.enabledTimeframes= const ['15m'],
     this.cooldownMinutes  = 10,
-    this.htfTimeframe     = const ['30m'],
+    this.htfTimeframe     = const ['1h'],
     this.lotSizes         = const {
-      'BTC': 0.01, 'ETH': 0.10, 'SOL': 0.50,
-      'XAUUSD': 0.01, 'GBPJPY': 0.02,
+      'BTC': 0.01, 'ETH': 0.05,
+      'XAUUSD': 0.01, 'GBPJPY': 0.05,
     },
+    this.mlThreshold      = 0.62,
     this.tradesToday      = 0,
     this.dailyPnl         = 0.0,
     this.lastScan,
@@ -57,6 +60,7 @@ class ScalpState {
     int? cooldownMinutes,
     List<String>? htfTimeframe,
     Map<String, double>? lotSizes,
+    double? mlThreshold,
     int? tradesToday,
     double? dailyPnl,
     String? lastScan,
@@ -74,6 +78,7 @@ class ScalpState {
     cooldownMinutes:   cooldownMinutes   ?? this.cooldownMinutes,
     htfTimeframe:      htfTimeframe      ?? this.htfTimeframe,
     lotSizes:          lotSizes          ?? this.lotSizes,
+    mlThreshold:       mlThreshold       ?? this.mlThreshold,
     tradesToday:       tradesToday       ?? this.tradesToday,
     dailyPnl:          dailyPnl          ?? this.dailyPnl,
     lastScan:          lastScan          ?? this.lastScan,
@@ -95,13 +100,20 @@ class ScalpState {
       for (final e in lotSizes.entries)
         if (e.value > 0) e.key: e.value
     },
+    'ml_threshold':       mlThreshold,
   };
 }
 
 // ── Notifier ──────────────────────────────────────────────────────────────────
 
 class ScalpNotifier extends StateNotifier<ScalpState> {
+  // Primary account Dio (account 1 — status display)
   final _dio = DioClient.create();
+
+  // All accounts Dio instances for broadcast commands
+  static List<dynamic> get _allDios => ApiConstants.accounts
+      .map((a) => DioClient.create(baseUrl: a['url']!))
+      .toList();
 
   ScalpNotifier() : super(const ScalpState()) {
     refreshStatus();
@@ -129,6 +141,7 @@ class ScalpNotifier extends StateNotifier<ScalpState> {
         cooldownMinutes:   s['cooldown_minutes']    as int?   ?? state.cooldownMinutes,
         htfTimeframe:      (s['htf_timeframe']      as List?)?.cast<String>() ?? state.htfTimeframe,
         lotSizes:          rawLots.map((k, v) => MapEntry(k, (v as num).toDouble())),
+        mlThreshold:       (s['ml_threshold'] as num?)?.toDouble() ?? state.mlThreshold,
       );
     } catch (e) {
       state = state.copyWith(error: e.toString());
@@ -137,7 +150,11 @@ class ScalpNotifier extends StateNotifier<ScalpState> {
 
   Future<void> start() async {
     try {
-      await _dio.post('/trading/scalping/start', data: state.toSettings());
+      // Broadcast START to all accounts simultaneously
+      await Future.wait(
+        _allDios.map((dio) => dio.post('/trading/scalping/start',
+            data: state.toSettings()).catchError((_) {})),
+      );
       state = state.copyWith(isRunning: true, error: null);
     } catch (e) {
       state = state.copyWith(error: e.toString());
@@ -146,7 +163,11 @@ class ScalpNotifier extends StateNotifier<ScalpState> {
 
   Future<void> stop() async {
     try {
-      await _dio.post('/trading/scalping/stop');
+      // Broadcast STOP to all accounts simultaneously
+      await Future.wait(
+        _allDios.map((dio) => dio.post('/trading/scalping/stop')
+            .catchError((_) {})),
+      );
       state = state.copyWith(isRunning: false);
     } catch (e) {
       state = state.copyWith(error: e.toString());
@@ -185,6 +206,8 @@ class ScalpNotifier extends StateNotifier<ScalpState> {
     list.contains(tf) ? list.remove(tf) : list.add(tf);
     state = state.copyWith(htfTimeframe: list);
   }
+
+  void setMlThreshold(double v)    => state = state.copyWith(mlThreshold: v);
 
   void setLotSize(String symbol, double lot) {
     final map = Map<String, double>.from(state.lotSizes);
