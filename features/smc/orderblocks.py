@@ -55,11 +55,13 @@ def detect_order_blocks(df: pd.DataFrame, min_strength: float = 0.6) -> list:
                         "mitigated": False,
                     })
 
-    # Vérifier si les OB sont mitigés (prix est passé dedans)
+    # mitigated = price is currently inside the OB zone (testing it)
+    # price_inside = same flag, clearer name used by engine.py scalping logic
     current_price = float(df['close'].iloc[-1])
     for ob in obs:
-        if ob['low'] <= current_price <= ob['high']:
-            ob['mitigated'] = True
+        inside = ob['low'] <= current_price <= ob['high']
+        ob['mitigated']    = inside   # True = price is testing the OB right now
+        ob['price_inside'] = inside
 
     # Retourner les 5 OB les plus récents et forts
     obs_sorted = sorted(obs, key=lambda x: (x['index'], x['strength']), reverse=True)

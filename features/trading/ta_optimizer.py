@@ -44,15 +44,15 @@ FEATURE_TO_CATEGORY = {
 
 # Default weights before first ML retrain (mirrors the original hand-tuned scoring)
 DEFAULT_WEIGHTS = {
-    "rsi":         25.0,
-    "stoch":       25.0,
-    "adx":          0.0,
+    "rsi":         15.0,
+    "stoch":       15.0,
+    "adx":         15.0,
     "lg_strength":  0.0,
     "rr_ratio":     0.0,
-    "atr_ratio":    0.0,
-    "pd_pct":       0.0,
+    "atr_ratio":    5.0,
+    "pd_pct":      10.0,
     "htf":          0.0,
-    "structure":   10.0,
+    "structure":   20.0,
     "pd_zone":      0.0,
 }
 
@@ -102,8 +102,9 @@ def _save_config(cfg: dict):
 
 def _weights_from_importance(feature_importance: dict) -> dict:
     """
-    Aggregate ML feature importances by TA category,
-    then distribute VARIABLE_POOL points proportionally.
+    Aggregate ML feature importances by TA category, then blend with
+    DEFAULT_WEIGHTS (expert base) at 40% ML / 60% expert.
+    This ensures expert knowledge is never fully overwritten by ML.
     """
     category_imp: dict[str, float] = {}
     for feat, imp in feature_importance.items():
@@ -115,14 +116,16 @@ def _weights_from_importance(feature_importance: dict) -> dict:
     if total == 0:
         return DEFAULT_WEIGHTS.copy()
 
-    weights = {cat: round(imp / total * VARIABLE_POOL, 1)
-               for cat, imp in category_imp.items()}
+    ml_weights = {cat: round(imp / total * VARIABLE_POOL, 1)
+                  for cat, imp in category_imp.items()}
 
-    # Fill any missing categories
-    for cat in DEFAULT_WEIGHTS:
-        weights.setdefault(cat, 0.0)
+    # Blend: 60% expert base + 40% ML-derived
+    blended = {}
+    for cat, expert_val in DEFAULT_WEIGHTS.items():
+        ml_val = ml_weights.get(cat, 0.0)
+        blended[cat] = round(expert_val * 0.6 + ml_val * 0.4, 1)
 
-    return weights
+    return blended
 
 
 # ── Symbol / timeframe performance ───────────────────────────────────────────

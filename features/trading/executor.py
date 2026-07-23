@@ -1,12 +1,14 @@
 import MetaTrader5 as mt5
+from datetime import datetime, timezone
 from features.trading.risk_manager import calculate_lot_size, can_trade, get_daily_pnl_pct
 from core.config import runtime
 
+# Symboles 24/7 — non concernés par les fenêtres rollover/ouverture forex
+CRYPTO_SYMBOLS = {"BTC", "ETH", "SOL", "BNB", "XRP"}
+
 def _mt5_init():
-    """Initialize MT5 pointing to the configured terminal (multi-account support)."""
+    """Force re-login on every call to prevent stale connections."""
     import os
-    if mt5.terminal_info() is not None:
-        return
     kwargs = {"timeout": 10000}
     if runtime.mt5_path:
         kwargs["path"] = runtime.mt5_path
@@ -57,10 +59,15 @@ def place_trade(
     if not mt5_symbol:
         return {"success": False, "reason": f"Symbol {symbol} not supported"}
 
-    # ── Trades basés uniquement sur l'analyse ────────────────────────────────
-    # Pas de blocage anti-hedge : le bot peut ouvrir dans les deux sens sur un même
-    # symbole. Si la 1ère position est perdante, la 2ème (sens opposé) la corrige.
-    # Le cooldown (configuré dans les settings) contrôle l'espacement entre trades.
+    # ── 1 position max par symbole ───────────────────────────────────────────
+    # L'empilement même-sens ("averaging") a produit 4 paires perdantes
+    # (ETH 07-09/07-10/07-11, USDJPY 07-13) : risque corrélé sans nouvel edge.
+    _existing = mt5.positions_get(symbol=mt5_symbol)
+    if _existing:
+        return {
+            "success": False,
+            "reason": f"Position déjà ouverte sur {mt5_symbol} (max 1 par symbole)",
+        }
 
     if not mt5.symbol_select(mt5_symbol, True):
         return {"success": False, "reason": f"Cannot select symbol {mt5_symbol}"}
@@ -72,6 +79,23 @@ def place_trade(
     tick = mt5.symbol_info_tick(mt5_symbol)
     if tick is None:
         return {"success": False, "reason": f"No tick data for {mt5_symbol}"}
+
+    # ── Fenêtres interdites forex/métaux (heure serveur) ─────────────────────
+    # Lundi < 02:00 : digestion du gap week-end, spreads élargis, indicateurs
+    # faussés (les 3 pertes du 07-13 : 00:05, 00:21, 01:24 serveur).
+    # 23:45–00:30 quotidien : pic de spread au rollover.
+    if symbol.upper() not in CRYPTO_SYMBOLS:
+        _srv = datetime.fromtimestamp(tick.time, tz=timezone.utc)  # epoch MT5 = horloge serveur
+        _monday_open = _srv.weekday() == 0 and _srv.hour < 2
+        _rollover = (_srv.hour == 23 and _srv.minute >= 45) or (_srv.hour == 0 and _srv.minute < 30)
+        if _monday_open or _rollover:
+            return {
+                "success": False,
+                "reason": (
+                    f"Fenêtre interdite ({'ouverture lundi' if _monday_open else 'rollover'}) "
+                    f"— heure serveur {_srv:%a %H:%M}"
+                ),
+            }
 
     order_type = mt5.ORDER_TYPE_BUY  if action == 'buy'  else mt5.ORDER_TYPE_SELL
     price      = tick.ask            if action == 'buy'  else tick.bid
@@ -140,47 +164,69 @@ def place_trade(
     if real_reward <= 0:
         return {"success": False, "reason": f"TP invalide après recalcul: TP={tp1} price={price}"}
     real_rr = real_reward / real_risk
-    if real_rr < 0.5:
-        return {"success": False, "reason": f"RR trop faible: {real_rr:.2f} (min 0.5)"}
+    if real_rr < 0.95:
+        return {"success": False, "reason": f"RR trop faible: {real_rr:.2f} (min 0.95)"}
 
-    # ── Guard balance : plafond risque dollar (AUTO lots seulement) ───────────
-    # Les lots manuels (fixed_lot > 0) sont respectés tels quels.
-    # Pour les lots auto, on vérifie que le risque estimé ≤ 5% du solde.
-    if not _lot_is_fixed:
-        _acct = mt5.account_info()
-        if _acct and _acct.balance > 0:
-            point   = symbol_info.point
-            _max5   = _acct.balance * 0.05
-            _max10  = _acct.balance * 0.10
-            _cs     = symbol_info.trade_contract_size if symbol_info.trade_contract_size > 0 else 1.0
-            _ts     = symbol_info.trade_tick_size      if symbol_info.trade_tick_size  > 0 else point
-            _tv     = symbol_info.trade_tick_value     if symbol_info.trade_tick_value > 0 else 1.0
+    # ── Guard balance : plafond risque dollar (TOUS les lots) ────────────────
+    # S'applique aussi aux lots fixes : l'UI peut pousser d'anciennes valeurs
+    # (07-13 : lots 0.04/0.2 poussés par le front → stop-out du compte).
+    # Risque estimé ≤ 5% du solde, sinon lot réduit ; rejet si même le lot
+    # minimum risque > 10%.
+    _acct = mt5.account_info()
+    if _acct and _acct.balance > 0:
+        point   = symbol_info.point
+        _max5   = _acct.balance * 0.05
+        _max10  = _acct.balance * 0.10
+        _cs     = symbol_info.trade_contract_size if symbol_info.trade_contract_size > 0 else 1.0
+        _ts     = symbol_info.trade_tick_size      if symbol_info.trade_tick_size  > 0 else point
+        _tv     = symbol_info.trade_tick_value     if symbol_info.trade_tick_value > 0 else 1.0
 
-            if mt5_symbol.upper().endswith(('USD', 'USDM')):
-                _est_loss = lot_size               * _cs * real_risk
-                _min_loss = symbol_info.volume_min * _cs * real_risk
-            else:
-                _ticks    = real_risk / _ts if _ts > 0 else 1
-                _est_loss = lot_size               * _ticks * _tv
-                _min_loss = symbol_info.volume_min * _ticks * _tv
+        if mt5_symbol.upper().endswith(('USD', 'USDM')):
+            _est_loss = lot_size               * _cs * real_risk
+            _min_loss = symbol_info.volume_min * _cs * real_risk
+        else:
+            _ticks    = real_risk / _ts if _ts > 0 else 1
+            _est_loss = lot_size               * _ticks * _tv
+            _min_loss = symbol_info.volume_min * _ticks * _tv
 
-            if _est_loss > _max5:
-                if _min_loss > _max10:
+        if _est_loss > _max5:
+            # Choix utilisateur 2026-07-16 : les lots FIXES de l'app s'exécutent
+            # TELS QUELS quel que soit le solde — aucun clamp. Seule limite :
+            # si le SL du lot demandé risque ≥90% du solde, le broker ferait
+            # un stop-out AVANT le SL (wipe du 13/07) — trade non exécutable
+            # comme conçu, donc rejeté. Les lots AUTO gardent le clamp 5%.
+            if _lot_is_fixed:
+                if _est_loss >= _acct.balance * 0.90:
                     return {
                         "success": False,
                         "reason": (
-                            f"Balance ${_acct.balance:.2f} trop faible pour {symbol}: "
-                            f"lot min risque ${_min_loss:.2f} > 10% (${_max10:.2f})"
+                            f"Stop-out garanti pour {symbol}: lot {lot_size} risque "
+                            f"${_est_loss:.2f} ≥ 90% du solde ${_acct.balance:.2f}"
+                        ),
+                    }
+                print(
+                    f"[BALANCE GUARD] {symbol} lot fixe {lot_size} respecté — "
+                    f"risque ${_est_loss:.2f} = {100*_est_loss/_acct.balance:.0f}% "
+                    f"du solde ${_acct.balance:.2f}"
+                )
+            else:
+                if _min_loss >= _acct.balance * 0.90:
+                    return {
+                        "success": False,
+                        "reason": (
+                            f"Stop-out garanti pour {symbol}: lot min risque "
+                            f"${_min_loss:.2f} ≥ 90% du solde ${_acct.balance:.2f}"
                         ),
                     }
                 if mt5_symbol.upper().endswith(('USD', 'USDM')):
                     _safe = _max5 / (_cs * real_risk) if (_cs * real_risk) > 0 else symbol_info.volume_min
                 else:
                     _safe = _max5 / (_ticks * _tv) if (_ticks * _tv) > 0 else symbol_info.volume_min
+                _requested = lot_size
                 lot_size = round(max(symbol_info.volume_min, min(lot_size, _safe)), 2)
                 print(
-                    f"[BALANCE GUARD] {symbol} auto lot → {lot_size} "
-                    f"(risque ${_min_loss:.2f} ≤ ${_max5:.2f}, balance=${_acct.balance:.2f})"
+                    f"[BALANCE GUARD] {symbol} lot auto {_requested} → {lot_size} "
+                    f"(risque max ${_max5:.2f}, balance=${_acct.balance:.2f})"
                 )
 
     # ── Correction "Invalid stops" ────────────────────────────────────────────

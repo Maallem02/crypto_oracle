@@ -21,6 +21,12 @@ def detect_liquidity_grab(df: pd.DataFrame, lookback: int = 10) -> dict:
     Paramètres de qualité :
       - recovery_pct >= 0.015% : filtre les effleurements
       - Fenêtre max : 6 bougies pour rester "frais"
+
+    Bullish ET bearish sont TOUJOURS calculés (plus de court-circuit). Le
+    primaire reste bullish par défaut si les deux existent (comportement
+    historique inchangé), mais le second est exposé via "alt_type"/"alt" —
+    permet à l'engine de basculer vers la direction alignée avec la
+    tendance réelle au lieu de rejeter purement un signal contre-tendance.
     """
     if len(df) < lookback + 5:
         return {"detected": False, "type": None}
@@ -90,18 +96,6 @@ def detect_liquidity_grab(df: pd.DataFrame, lookback: int = 10) -> dict:
                 }
                 break
 
-    if best_bullish:
-        return {
-            "detected":      True,
-            "type":          "bullish",
-            **best_bullish,
-            "description": (
-                f"Bullish LG ({best_bullish['pattern']}): "
-                f"swept {best_bullish['grabbed_level']} "
-                f"→ +{best_bullish['recovery_pct']}% recovery"
-            ),
-        }
-
     # ──────────────────────────────────────────────────────────────────────────
     # BEARISH LG
     # ──────────────────────────────────────────────────────────────────────────
@@ -144,19 +138,60 @@ def detect_liquidity_grab(df: pd.DataFrame, lookback: int = 10) -> dict:
                 }
                 break
 
+    # ── Combine: bullish is primary by default, bearish exposed as alt ────────
+    if best_bullish and best_bearish:
+        return {
+            "detected": True,
+            "type":     "bullish",
+            **best_bullish,
+            "description": (
+                f"Bullish LG ({best_bullish['pattern']}): "
+                f"swept {best_bullish['grabbed_level']} "
+                f"→ +{best_bullish['recovery_pct']}% recovery"
+            ),
+            "alt_type": "bearish",
+            "alt": {
+                "detected": True,
+                "type":     "bearish",
+                **best_bearish,
+                "description": (
+                    f"Bearish LG ({best_bearish['pattern']}): "
+                    f"swept {best_bearish['grabbed_level']} "
+                    f"→ -{best_bearish['recovery_pct']}% recovery"
+                ),
+            },
+        }
+
+    if best_bullish:
+        return {
+            "detected": True,
+            "type":     "bullish",
+            **best_bullish,
+            "description": (
+                f"Bullish LG ({best_bullish['pattern']}): "
+                f"swept {best_bullish['grabbed_level']} "
+                f"→ +{best_bullish['recovery_pct']}% recovery"
+            ),
+            "alt_type": None,
+            "alt": None,
+        }
+
     if best_bearish:
         return {
-            "detected":      True,
-            "type":          "bearish",
+            "detected": True,
+            "type":     "bearish",
             **best_bearish,
             "description": (
                 f"Bearish LG ({best_bearish['pattern']}): "
                 f"swept {best_bearish['grabbed_level']} "
                 f"→ -{best_bearish['recovery_pct']}% recovery"
             ),
+            "alt_type": None,
+            "alt": None,
         }
 
-    return {"detected": False, "type": None, "description": "No liquidity grab detected"}
+    return {"detected": False, "type": None, "alt_type": None, "alt": None,
+            "description": "No liquidity grab detected"}
 
 
 def get_scalping_entry(df: pd.DataFrame, grab: dict, structure_trend: str) -> dict | None:
@@ -178,16 +213,16 @@ def get_scalping_entry(df: pd.DataFrame, grab: dict, structure_trend: str) -> di
         sweep_low = grab.get("sweep_low", grabbed_level)
         sl        = round(min(float(sweep_low), grabbed_level) * 0.9995, 5)
         risk      = abs(entry - sl)
-        tp1       = round(entry + risk * 1.5, 5)
-        tp2       = round(entry + risk * 3.0, 5)
+        tp1       = round(entry + risk * 2.5, 5)
+        tp2       = round(entry + risk * 4.0, 5)
     else:
         action     = "sell"
         entry      = current_price
         sweep_high = grab.get("sweep_high", grabbed_level)
         sl         = round(max(float(sweep_high), grabbed_level) * 1.0005, 5)
         risk       = abs(sl - entry)
-        tp1        = round(entry - risk * 1.5, 5)
-        tp2        = round(entry - risk * 3.0, 5)
+        tp1        = round(entry - risk * 2.5, 5)
+        tp2        = round(entry - risk * 4.0, 5)
 
     rr = round(abs(tp1 - entry) / risk, 2) if risk > 0 else 0
 

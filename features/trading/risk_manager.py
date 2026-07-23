@@ -63,38 +63,36 @@ def can_trade(max_trades: int = 3) -> bool:
     bot_positions = [p for p in positions if p.magic == BOT_MAGIC]
     return len(bot_positions) < max_trades
 
-def get_daily_pnl_pct() -> float:
+def get_daily_pnl_pct(session_start: str = None) -> float:
     """
-    Retourne le PnL du jour du BOT uniquement (magic=234000).
-
-    IMPORTANT : ne compte PAS les positions manuelles de l'utilisateur —
-    seuls les trades ouverts/fermés par ce bot sont pris en compte.
-
-    - Réalisé   : deals fermés aujourd'hui (entry=DEAL_ENTRY_OUT) avec magic 234000
-    - Non-réalisé : positions actuellement ouvertes avec magic 234000
+    Retourne le PnL depuis le dernier démarrage du bot (magic=234000).
+    session_start: ISO datetime string — only count deals after this time.
     """
     from datetime import date, datetime as dt
     account = mt5.account_info()
     if account is None or account.balance == 0:
         return 0.0
 
-    # ── Réalisé : deals de fermeture aujourd'hui par le bot ─────────────────
-    start_of_day = dt.combine(date.today(), dt.min.time())
-    deals = mt5.history_deals_get(start_of_day, dt.now())
+    # Count deals from session start (when bot was last started), not midnight
+    # This prevents old losses from blocking a fresh bot session
+    if session_start:
+        try:
+            from_dt = dt.fromisoformat(session_start)
+        except Exception:
+            from_dt = dt.combine(date.today(), dt.min.time())
+    else:
+        from_dt = dt.combine(date.today(), dt.min.time())
+
+    deals = mt5.history_deals_get(from_dt, dt.now())
     realized = 0.0
     if deals:
         realized = sum(
             d.profit for d in deals
-            if d.entry == 1 and d.magic == BOT_MAGIC   # DEAL_ENTRY_OUT = 1
+            if d.entry == 1 and d.magic == BOT_MAGIC
         )
 
-    # ── Non-réalisé : uniquement les positions du bot ────────────────────────
-    positions  = mt5.positions_get()
-    unrealized = 0.0
-    if positions:
-        unrealized = sum(p.profit for p in positions if p.magic == BOT_MAGIC)
-
-    # Use realized PnL only — unrealized fluctuates and can prematurely
-    # stop the bot while a trade is in normal drawdown before recovering.
-    total_pct = round(realized / account.balance * 100, 2)
+    # Divide by opening balance of this session to avoid amplification
+    opening_balance = account.balance - realized
+    denominator = opening_balance if opening_balance > 1 else account.balance
+    total_pct = round(realized / denominator * 100, 2)
     return total_pct

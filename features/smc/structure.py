@@ -57,7 +57,7 @@ def detect_market_structure(df: pd.DataFrame) -> dict:
     
     last_swing_high = float(highs[-1]) if len(highs) > 0 else None
     last_swing_low  = float(lows[-1])  if len(lows) > 0  else None
-    
+
     return {
         "trend":           trend,
         "last_bos":        last_bos,
@@ -65,3 +65,43 @@ def detect_market_structure(df: pd.DataFrame) -> dict:
         "last_swing_high": last_swing_high,
         "last_swing_low":  last_swing_low,
     }
+
+
+def detect_fresh_choch(df: pd.DataFrame, lookback: int = 5, recent_candles: int = 6) -> dict:
+    """
+    Fast structure-break detector — catches a CHoCH the moment price closes
+    beyond the last CONFIRMED opposite swing point, instead of waiting for a
+    NEW swing point to form and confirm (which needs `lookback` candles after
+    it forms — a multi-hour lag on 30m/1H).
+
+    Returns {"choch": "bullish"|"bearish"|None, "broke_level": float|None}
+    """
+    if df is None or len(df) < lookback * 2 + recent_candles + 1:
+        return {"choch": None, "broke_level": None}
+
+    df_sw = detect_swings(df, lookback)
+
+    high_idx = [i for i in range(len(df_sw)) if df_sw['swing_high'].iloc[i]]
+    low_idx  = [i for i in range(len(df_sw)) if df_sw['swing_low'].iloc[i]]
+
+    if not high_idx or not low_idx:
+        return {"choch": None, "broke_level": None}
+
+    last_high_pos = high_idx[-1]
+    last_low_pos  = low_idx[-1]
+    last_high     = float(df_sw['high'].iloc[last_high_pos])
+    last_low      = float(df_sw['low'].iloc[last_low_pos])
+
+    recent_closes = df_sw['close'].iloc[-recent_candles:]
+
+    # Uptrend structure (last confirmed point is a higher low) →
+    # bearish CHoCH = price closes below that swing low
+    if last_low_pos > last_high_pos and (recent_closes < last_low).any():
+        return {"choch": "bearish", "broke_level": last_low}
+
+    # Downtrend structure (last confirmed point is a lower high) →
+    # bullish CHoCH = price closes above that swing high
+    if last_high_pos > last_low_pos and (recent_closes > last_high).any():
+        return {"choch": "bullish", "broke_level": last_high}
+
+    return {"choch": None, "broke_level": None}

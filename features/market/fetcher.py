@@ -3,7 +3,10 @@ import numpy as np
 import requests
 import ccxt
 import time
+import os
+import MetaTrader5 as mt5
 from datetime import datetime, timedelta
+from core.config import runtime
 
 # ── Mapping des symboles ───────────────────────────────────────────────
 CRYPTO_SYMBOLS = {
@@ -25,6 +28,69 @@ FOREX_SYMBOLS = {
 TIMEFRAME_CCXT = {
     "1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1h", "4h": "4h",
 }
+
+# ── Mapping symboles → MT5 (même feed que l'exécution des trades) ──────
+MT5_SYMBOLS = {
+    "BTC":    "BTCUSDm",
+    "ETH":    "ETHUSDm",
+    "SOL":    "SOLUSDm",
+    "BNB":    "BNBUSDm",
+    "XRP":    "XRPUSDm",
+    "XAUUSD": "XAUUSDm",
+    "XAGUSD": "XAGUSDm",
+    "GBPJPY": "GBPJPYm",
+    "EURUSD": "EURUSDm",
+    "USDJPY": "USDJPYm",
+}
+
+MT5_TIMEFRAMES = {
+    "1m":  mt5.TIMEFRAME_M1,
+    "3m":  mt5.TIMEFRAME_M3,
+    "5m":  mt5.TIMEFRAME_M5,
+    "15m": mt5.TIMEFRAME_M15,
+    "30m": mt5.TIMEFRAME_M30,
+    "1h":  mt5.TIMEFRAME_H1,
+    "4h":  mt5.TIMEFRAME_H4,
+    "1d":  mt5.TIMEFRAME_D1,
+}
+
+def _mt5_init():
+    if mt5.terminal_info() is not None:
+        return
+    kwargs = {"timeout": 10000}
+    if runtime.mt5_path:
+        kwargs["path"] = runtime.mt5_path
+    login_id = os.getenv("MT5_LOGIN")
+    password  = os.getenv("MT5_PASSWORD")
+    server    = os.getenv("MT5_SERVER")
+    if login_id and password and server:
+        kwargs["login"]    = int(login_id)
+        kwargs["password"] = password
+        kwargs["server"]   = server
+    mt5.initialize(**kwargs)
+
+# ── Fetch via MT5 (même broker feed que l'exécution des trades) ───────
+def fetch_mt5_candles(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
+    mt5_symbol = MT5_SYMBOLS.get(symbol.upper())
+    if not mt5_symbol:
+        raise ValueError(f"Symbole MT5 inconnu : {symbol}")
+
+    tf = MT5_TIMEFRAMES.get(timeframe, mt5.TIMEFRAME_M15)
+
+    _mt5_init()
+    if not mt5.symbol_select(mt5_symbol, True):
+        raise ValueError(f"Impossible de sélectionner {mt5_symbol} dans MT5")
+
+    rates = mt5.copy_rates_from_pos(mt5_symbol, tf, 0, limit)
+    if rates is None or len(rates) == 0:
+        raise ValueError(f"Pas de données MT5 pour {mt5_symbol} en {timeframe}: {mt5.last_error()}")
+
+    df = pd.DataFrame(rates)
+    df["timestamp"] = pd.to_datetime(df["time"], unit="s")
+    df.set_index("timestamp", inplace=True)
+    df = df.rename(columns={"tick_volume": "volume"})
+    df = df[["open", "high", "low", "close", "volume"]].astype(float)
+    return df
 
 TIMEFRAME_YF = {
     "1m":  ("1m",  "1d"),
@@ -135,13 +201,10 @@ def fetch_forex_candles(symbol: str, timeframe: str) -> pd.DataFrame:
 
 # ── Point d'entrée unifié ─────────────────────────────────────────────
 def fetch_candles(symbol: str, timeframe: str = "15m", limit: int = 200) -> pd.DataFrame:
+    """Candles depuis MT5 — même feed que l'exécution des trades (plus de
+    décalage entre l'analyse TA et le prix réel du broker)."""
     symbol = symbol.upper()
-    if symbol in CRYPTO_SYMBOLS:
-        return fetch_crypto_candles(symbol, timeframe, limit)
-    elif symbol in FOREX_SYMBOLS:
-        return fetch_forex_candles(symbol, timeframe)
-    else:
-        raise ValueError(f"Symbole inconnu : {symbol}")
+    return fetch_mt5_candles(symbol, timeframe, limit)
 
 # ── Prix actuel ────────────────────────────────────────────────────────
 def get_current_price(symbol: str) -> dict:
