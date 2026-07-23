@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
 import '../providers/scalp_provider.dart';
 
-const _allSymbols    = ['BTC', 'ETH', 'SOL', 'XAUUSD', 'GBPJPY', 'BNB', 'XRP', 'EURUSD', 'USDJPY'];
+const _allSymbols    = ['BTC', 'ETH', 'SOL', 'XAUUSD', 'XAGUSD', 'GBPJPY', 'BNB', 'XRP', 'EURUSD', 'USDJPY'];
 const _allTimeframes = ['5m', '15m', '30m', '1h'];
 const _allHtf        = ['15m', '30m', '1h', '4h'];
 

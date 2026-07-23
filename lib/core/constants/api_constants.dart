@@ -2,16 +2,16 @@ class ApiConstants {
   ApiConstants._();
 
   // ───  FastAPI Backend ───────────────────────────────────────────────
-  // Account 1 — permanent ngrok URL
-  static const String baseUrl   = 'https://ridden-curtain-reputably.ngrok-free.dev';
+  // Account 1 — Cloudflare quick tunnel (replaces ngrok, no monthly request cap).
+  // NOTE: quick tunnel URLs change if the tunnel process restarts — update here
+  // when that happens. For a URL that never changes, switch to a named tunnel.
+  static const String baseUrl   = 'https://striking-opt-bridal-going.trycloudflare.com';
 
   // ─── Multi-account support ───────────────────────────────────────────────
-  // Add/remove accounts here. url2 gets a random ngrok URL (update after each restart)
-  // or upgrade ngrok ($8/mo) to get a second static domain.
+  // Add/remove accounts here.
   static const List<Map<String, String>> accounts = [
-    {'name': 'Compte 1', 'url': 'https://ridden-curtain-reputably.ngrok-free.dev'},
-    // Compte 2 disabled — ngrok free plan only supports 1 tunnel
-    // Re-enable when second tunnel is available (cloudflare or ngrok paid)
+    {'name': 'Compte 1', 'url': 'https://striking-opt-bridal-going.trycloudflare.com'},
+    // Compte 2 disabled — re-enable with a second tunnel when needed
   ];
 
   // Auth
