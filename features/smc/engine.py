@@ -718,23 +718,33 @@ def run_scalping_analysis(df: pd.DataFrame, symbol: str = "", macro_trend: str =
     scalping_entry = get_scalping_entry(df, liquidity_grab, structure.get("trend", "neutral"))
     if scalping_entry:
         entry_price = current_price
+        # Per-symbol take-profit RR (rr_sweep 2026-07-23): crypto trends run far,
+        # so BTC/ETH earn more at 3.0R (ETH +0.16R vs +0.13R, BTC +0.10 vs +0.08);
+        # metals/forex don't extend enough — keep 2.5R.
+        _tp_rr = 3.0 if str(symbol).upper() in ("BTC", "ETH") else 2.5
+        # SL widened 1.5x->2.5x ATR (floor) / 2.0x->3.0x (cap) — sl_width_sweep
+        # 2026-07-24 confirmed the user's "stops too tight" read: the 1.5x stop
+        # was the WORST (pooled +0.07R) — knocked out of correct-bias trades
+        # before they ran. 2.5x ATR ~doubles expectancy (BTC +0.14, gold +0.08).
+        # NOTE: wider SL = ~1.6x bigger $ risk per FIXED lot — reduce app lots
+        # ~40% (or use risk-based sizing) to keep the same dollar risk.
         if bias == "buy":
             sl_struct = scalping_entry["sl"]
-            sl_atr    = round(entry_price - atr * 1.5, 5)
+            sl_atr    = round(entry_price - atr * 2.5, 5)
             new_sl    = min(sl_struct, sl_atr)
-            sl_cap    = round(entry_price - atr * 2.0, 5)
+            sl_cap    = round(entry_price - atr * 3.0, 5)
             new_sl    = max(new_sl, sl_cap)
             risk      = abs(entry_price - new_sl)
-            new_tp1   = round(entry_price + risk * 2.5, 5)
+            new_tp1   = round(entry_price + risk * _tp_rr, 5)
             new_tp2   = round(entry_price + risk * 4.0, 5)
         else:
             sl_struct = scalping_entry["sl"]
-            sl_atr    = round(entry_price + atr * 1.5, 5)
+            sl_atr    = round(entry_price + atr * 2.5, 5)
             new_sl    = max(sl_struct, sl_atr)
-            sl_cap    = round(entry_price + atr * 2.0, 5)
+            sl_cap    = round(entry_price + atr * 3.0, 5)
             new_sl    = min(new_sl, sl_cap)
             risk      = abs(entry_price - new_sl)
-            new_tp1   = round(entry_price - risk * 2.5, 5)
+            new_tp1   = round(entry_price - risk * _tp_rr, 5)
             new_tp2   = round(entry_price - risk * 4.0, 5)
 
         risk   = abs(entry_price - new_sl)

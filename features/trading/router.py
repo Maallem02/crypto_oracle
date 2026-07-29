@@ -547,24 +547,59 @@ def check_symbol_loss_streaks():
         print(f"[STREAK] check error: {e}")
 
 
-def update_direction_breaker(consec: int = 2, block_hours: int = 6):
-    """GLOBAL directional circuit breaker (the real 4H-lag fix).
+def _ema_macro_trend(symbol: str, tf: str) -> str:
+    """EMA20-slope trend on a higher timeframe — bullish/bearish/neutral.
+    Matches the definition validated in test_1h_vs_4h.py (2026-07-23):
+    requiring BOTH 1h and 4h to agree with the signal = +0.12R vs +0.07R
+    (4h-only), and it blocks downtrend-buys earlier because 1h flips first."""
+    try:
+        df = fetch_candles(symbol, tf, limit=60)
+        if df is None or len(df) < 25:
+            return "neutral"
+        ema = df["close"].ewm(span=20).mean()
+        c, e, e_prev = df["close"].iloc[-1], ema.iloc[-1], ema.iloc[-3]
+        if c > e and e > e_prev:
+            return "bullish"
+        if c < e and e < e_prev:
+            return "bearish"
+        return "neutral"
+    except Exception:
+        return "neutral"
 
-    Reads the tail of today's CLOSED trades (all symbols) and, if the most
-    recent `consec` resolved trades are same-direction SL losses, blocks that
-    direction for `block_hours` from the most recent loss. Any win breaks the
-    streak; breakeven (|pnl|<0.15) is ignored. Stateless replay from scalp_log
-    so it survives restarts. Validated on 07-20→22: turned -$29.86 into
-    +$13.74 with the 2 big blocked winners already subtracted.
+
+def _asset_class(symbol: str) -> str:
+    """Group symbols so a reversal in one market doesn't freeze another
+    (a bad BTC-buy shouldn't block a good gold-buy)."""
+    s = (symbol or "").upper()
+    if s in ("BTC", "ETH", "SOL", "BNB", "XRP"):
+        return "crypto"
+    if s in ("XAUUSD", "XAGUSD"):
+        return "metals"
+    return "forex"
+
+
+def update_direction_breaker(consec: int = 2, block_hours: int = 4):
+    """PER-ASSET-CLASS directional circuit breaker (the real 4H-lag fix).
+
+    For each asset class (crypto / metals / forex) independently: if the most
+    recent `consec` resolved trades IN THAT CLASS are same-direction SL losses,
+    that (class, direction) is blocked for `block_hours` from the last loss.
+    Per-class (not global) so a crypto reversal doesn't freeze gold/forex;
+    per-class (not per-symbol) so it still catches a correlated crash within a
+    class. Any win breaks the streak; breakeven (|pnl|<0.15) ignored. Stateless
+    replay from scalp_log, survives restart. Original GLOBAL version validated
+    on 07-20→22 (-$29.86 → +$13.74); reversal test 07-23 confirmed no profitable
+    counter-trade exists during a block, so the block only sits out chop.
+    Duration 6h→4h and global→per-class on 2026-07-23 (user tuning).
     """
     try:
         from core.database import get_db
         day_start = scalp_state.get("session_start") or datetime.now().strftime("%Y-%m-%dT00:00:00")
         conn = get_db()
         rows = conn.execute(
-            "SELECT action, outcome, profit, COALESCE(closed_at, timestamp) ct "
+            "SELECT symbol, action, outcome, profit, COALESCE(closed_at, timestamp) ct "
             "FROM scalp_log WHERE outcome IS NOT NULL AND timestamp >= ? "
-            "ORDER BY COALESCE(closed_at, timestamp) DESC LIMIT 12",
+            "ORDER BY COALESCE(closed_at, timestamp) DESC LIMIT 40",
             (day_start,)
         ).fetchall()
         conn.close()
@@ -572,35 +607,35 @@ def update_direction_breaker(consec: int = 2, block_hours: int = 6):
         print(f"[DIR-BREAKER] read error: {e}")
         return
 
-    streak_dir = None
-    streak = 0
-    last_loss_ct = None
-    for action, outcome, profit, ct in rows:          # most-recent first
-        is_loss = outcome == 0 and abs(profit or 0) >= 0.15
-        is_win = outcome == 1 and (profit or 0) > 0.15
-        if not is_loss and not is_win:
-            continue                                   # breakeven → ignore
-        if is_win:
-            break                                      # a win ends any loss streak
-        if streak_dir is None:
-            streak_dir, streak, last_loss_ct = action, 1, ct
-        elif action == streak_dir:
-            streak += 1
-        else:
-            break                                      # opposite-dir loss ends streak
-
     now = datetime.now()
     direction_breaker.clear()
-    if streak >= consec and last_loss_ct:
-        try:
-            until = datetime.fromisoformat(last_loss_ct) + timedelta(hours=block_hours)
-        except Exception:
-            until = now + timedelta(hours=block_hours)
-        if until > now:
-            direction_breaker[streak_dir] = until
-            rem = int((until - now).total_seconds() // 60)
-            print(f"[DIR-BREAKER] {streak_dir.upper()} blocked {rem}min "
-                  f"({consec}+ consecutive SL losses - market reversing against this side)")
+    for cls in ("crypto", "metals", "forex"):
+        streak_dir, streak, last_loss_ct = None, 0, None
+        for symbol, action, outcome, profit, ct in rows:      # most-recent first
+            if _asset_class(symbol) != cls:
+                continue
+            is_loss = outcome == 0 and abs(profit or 0) >= 0.15
+            is_win = outcome == 1 and (profit or 0) > 0.15
+            if not is_loss and not is_win:
+                continue                                       # breakeven → ignore
+            if is_win:
+                break                                          # a win ends the streak
+            if streak_dir is None:
+                streak_dir, streak, last_loss_ct = action, 1, ct
+            elif action == streak_dir:
+                streak += 1
+            else:
+                break                                          # opposite-dir loss ends streak
+        if streak >= consec and last_loss_ct:
+            try:
+                until = datetime.fromisoformat(last_loss_ct) + timedelta(hours=block_hours)
+            except Exception:
+                until = now + timedelta(hours=block_hours)
+            if until > now:
+                direction_breaker[(cls, streak_dir)] = until
+                rem = int((until - now).total_seconds() // 60)
+                print(f"[DIR-BREAKER] {cls} {streak_dir.upper()} blocked {rem}min "
+                      f"({consec}+ consecutive {cls} {streak_dir} SL losses)")
 
 
 def _update_direction_locks():
@@ -854,7 +889,7 @@ def manage_open_positions():
     """
     Two-step exit — runs every 30 seconds:
 
-      1R profit    → breakeven (SL moves to entry, zero loss guaranteed)
+      1.5R profit  → breakeven (SL moves to entry, zero loss guaranteed)
       70% toward TP → dynamic trail: max(5% of TP dist, 10% of current profit)
 
     BE trigger is expressed in R (risk units), not % of TP distance:
@@ -862,6 +897,12 @@ def manage_open_positions():
     price barely moved, SL jumped to entry, normal noise retraced and
     scratched the trade (16% of ALL trades died at BE). At 1R the move
     has proven itself before we protect it.
+
+    2026-07-23: BE trigger moved 1R → 1.5R. Exit study on ~28k with-trend
+    trades (BTC/ETH/XAU/XAG, both split-halves): BE@1.0 was strangling
+    pullback-then-continue winners (exit at 0 instead of +2.5R). BE@1.5R
+    beat it by ~+0.05R robustly; no-ratchet was best (+0.10R) but higher
+    variance — 1.5R chosen as the balanced middle. Reversible one-liner.
 
     Trail buffer scales with unrealized profit so big runners (800+ pts BTC)
     aren't stopped by 5-pt noise. A 800-pt BTC move gives 80-pt buffer;
@@ -925,12 +966,14 @@ def manage_open_positions():
                     new_sl = candidate
                     action = "trail"
 
-        # ── 1R profit → breakeven — zero loss, full upside still open ─────
+        # ── 1.5R profit → breakeven — zero loss, full upside still open ───
         # risk > 0 also means SL is still on the loss side (original SL);
         # after the BE move risk becomes 0 and this block never re-fires.
+        # Trigger 1.5R (was 1.0R) — exit study 2026-07-23: at 1.0R the BE
+        # scratched pullback-continue winners; 1.5R lets them breathe first.
         else:
             risk = (entry - sl) if is_buy else (sl - entry)
-            if risk > 0 and moved >= risk:
+            if risk > 0 and moved >= risk * 1.5:
                 new_sl = entry
                 action = "breakeven"
 
@@ -1004,7 +1047,7 @@ def _scalp_auto_scan_inner():
         pass
 
     # ── Limites journalières ──────────────────────────────────────────────────
-    # Daily loss limit — ACTIVE
+    # Daily loss limit — ACTIVE (user setting, default 15%)
     max_loss = settings.get("max_daily_loss_pct", 0.0)
     if max_loss > 0:
         daily_pnl = scalp_state.get("daily_pnl", 0.0)
@@ -1012,6 +1055,28 @@ def _scalp_auto_scan_inner():
             scalp_state["running"]        = False
             scalp_state["stopped_reason"] = f"Daily loss limit hit: {daily_pnl:.1f}% (limit: -{max_loss}%)"
             print(f"[STOP] Daily loss limit hit: {daily_pnl:.1f}% <= -{max_loss}%")
+            return
+
+    # ── MIXED-OPTIMAL survival breaker (2026-07-23) — the floor June lacked.
+    # DAILY loss is now controlled ENTIRELY by the app's max_daily_loss_pct
+    # setting (user choice 2026-07-24: "always accept daily loss from the app").
+    # The only code-enforced floor left is the DRAWDOWN halt: -35% below session
+    # peak equity → full stop, no auto-reset. This is the ultimate wipe-preventer
+    # (June had none → account went to $0 in July); it stays regardless of app.
+    try:
+        _acct = mt5.account_info()
+        _eq = _acct.equity if _acct else None
+    except Exception:
+        _eq = None
+    if _eq and _eq > 0:
+        _peak = max(scalp_state.get("peak_equity") or _eq, _eq)
+        scalp_state["peak_equity"] = _peak
+        _dd = (_eq - _peak) / _peak * 100.0
+        if _dd <= -35.0:
+            scalp_state["running"]        = False
+            scalp_state["stopped_reason"] = (f"SURVIVAL drawdown halt: equity ${_eq:.2f} "
+                                             f"is {_dd:.0f}% below peak ${_peak:.2f} — manual review")
+            print(f"[SURVIVAL] DRAWDOWN HALT {_dd:.0f}% below peak ${_peak:.2f} — full stop")
             return
 
     # Balance protection disabled — bot runs regardless of balance
@@ -1040,7 +1105,7 @@ def _scalp_auto_scan_inner():
     # 6h. Validé sur la période réelle : -$29.86 → +$13.74 (les 2 gros gains
     # or bloqués sont déjà déduits). Rejoue la série depuis scalp_log →
     # survit aux redémarrages.
-    update_direction_breaker(consec=2, block_hours=6)
+    update_direction_breaker(consec=2, block_hours=4)
 
     # Auto-retrain ML si assez de nouveaux samples
     try:
@@ -1170,6 +1235,12 @@ def _scalp_auto_scan_inner():
         except Exception as _m4e:
             _macro4h = "neutral"
             print(f"[MACRO-4H] {symbol}: fetch failed ({_m4e}) — neutral")
+
+        # EMA20-slope trends on 1h + 4h — the "require BOTH to agree" filter
+        # (test_1h_vs_4h 2026-07-23: +0.12R vs +0.07R, blocks downtrend-buys
+        # earlier since 1h flips before 4h). Computed once per symbol.
+        _ema_1h = _ema_macro_trend(symbol, "1h")
+        _ema_4h = _ema_macro_trend(symbol, "4h")
 
         _fallback_traded = False   # at most one fallback trade (S/R or M1) per symbol per scan
 
@@ -1449,14 +1520,16 @@ def _scalp_auto_scan_inner():
 
                 bias = analysis["bias"]
 
-                # ── GLOBAL directional circuit breaker ───────────────────
-                # After 2 consecutive SL losses in this direction (any symbol),
-                # this side is frozen 6h — stops the bot buying a falling market
-                # 32× while the 4H trend lags the reversal. Auto-expires.
-                if bias in direction_breaker and now < direction_breaker[bias]:
-                    _rem = int((direction_breaker[bias] - now).total_seconds() // 60)
+                # ── PER-ASSET-CLASS directional circuit breaker ──────────
+                # After 2 consecutive SL losses in this direction WITHIN this
+                # symbol's asset class (crypto/metals/forex), that side is
+                # frozen 4h for that class only — stops buying a falling market
+                # while the 4H trend lags, without freezing unrelated markets.
+                _brk_key = (_asset_class(symbol), bias)
+                if _brk_key in direction_breaker and now < direction_breaker[_brk_key]:
+                    _rem = int((direction_breaker[_brk_key] - now).total_seconds() // 60)
                     print(f"[DIR-BREAKER] {symbol} {bias} blocked {_rem}min "
-                          f"(2+ consecutive {bias} losses - reversal protection)")
+                          f"({_brk_key[0]} {bias} reversal protection)")
                     _log_rejection(symbol, f"dir_breaker_{bias}_{_rem}min",
                                    score=ta_score, bias=bias)
                     continue
@@ -1477,6 +1550,28 @@ def _scalp_auto_scan_inner():
                     conds = " | ".join(analysis.get("conditions", []))
                     print(f"[MTF] {symbol} {tf} SELL rejected (HTF: bullish) score={ta_score} [{conds}]")
                     _log_rejection(symbol, f"htf_contra SELL vs bullish", score=ta_score)
+                    continue
+
+                # ── HTF trend filter PER TRADING TIMEFRAME (user framework 2026-07-24)
+                # Trade only in the direction of the higher-TF trend, mapped to the
+                # signal's timeframe (avoids buying an HTF pullback / selling an HTF
+                # rally):
+                #     M5  -> filter with H1
+                #     M15 -> filter with H4
+                #     M30 -> filter with H4
+                # EMA20-slope trend. Replaces the prior "require both 1h+4h" gate
+                # at user request. (Note: test_1h_vs_4h had both marginally better,
+                # +0.12R vs 1h-only +0.09 / 4h-only +0.07 — but this is the
+                # standard top-down MTF approach and lets more valid trades through.)
+                _filter_tf    = "1h" if tf in ("5m", "1m", "3m") else "4h"
+                _filter_trend = _ema_1h if _filter_tf == "1h" else _ema_4h
+                _need = "bullish" if bias == "buy" else "bearish"
+                if _filter_trend != _need:
+                    print(f"[HTF-FILTER] {symbol} {tf} {bias} rejected — "
+                          f"{_filter_tf} trend={_filter_trend}, need {_need}")
+                    _log_rejection(symbol,
+                                   f"htf_filter_{tf}_vs_{_filter_tf}={_filter_trend}",
+                                   score=ta_score, bias=bias)
                     continue
 
                 # Macro-4H hard block SUPPRIMÉ (gate trial 2026-07-14, 35 épisodes
@@ -1725,7 +1820,9 @@ def _scalp_auto_scan_inner():
                         score=ta_score, bias=bias)
                     continue
 
-                # Lot fixe par symbole si défini, sinon auto (risk-based)
+                # Full app control (user choice 2026-07-24: "respect every parameter
+                # from the app"). Lot per symbol comes from the app's lot_sizes;
+                # auto (risk-based) only if a symbol has no lot set.
                 lot_sizes  = settings.get("lot_sizes", {})
                 fixed_lot  = float(lot_sizes.get(symbol, 0))
 

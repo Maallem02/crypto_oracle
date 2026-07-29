@@ -32,8 +32,8 @@ from features.smc.engine import run_scalping_analysis  # noqa: E402
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "offline_dataset.sqlite")
 MT5_SYMBOLS = {"BTC": "BTCUSDm", "ETH": "ETHUSDm", "SOL": "SOLUSDm", "BNB": "BNBUSDm",
-               "XRP": "XRPUSDm", "XAUUSD": "XAUUSDm", "EURUSD": "EURUSDm",
-               "USDJPY": "USDJPYm", "GBPJPY": "GBPJPYm"}
+               "XRP": "XRPUSDm", "XAUUSD": "XAUUSDm", "XAGUSD": "XAGUSDm",
+               "EURUSD": "EURUSDm", "USDJPY": "USDJPYm", "GBPJPY": "GBPJPYm"}
 WINDOW = 100          # bars the live scan feeds the engine
 SL_ATR = 1.5
 RR = 2.5

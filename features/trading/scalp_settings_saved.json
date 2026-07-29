@@ -1,7 +1,7 @@
 {
-  "risk_percent": 1.5,
-  "min_score": 75.0,
-  "max_trades": 9,
+  "risk_percent": 5.0,
+  "min_score": 60.0,
+  "max_trades": 11,
   "max_daily_trades": 0,
   "max_daily_loss_pct": 0.0,
   "enabled_symbols": [
@@ -10,15 +10,13 @@
     "EURUSD",
     "GBPJPY",
     "XAUUSD",
-    "XRP",
-    "SOL",
     "USDJPY",
-    "BNB",
     "XAGUSD"
   ],
   "enabled_timeframes": [
     "15m",
-    "5m"
+    "5m",
+    "30m"
   ],
   "cooldown_minutes": 0,
   "htf_timeframe": [
@@ -26,7 +24,7 @@
     "1h"
   ],
   "lot_sizes": {
-    "BTC": 0.01,
+    "BTC": 0.02,
     "ETH": 0.17,
     "XAUUSD": 0.01,
     "EURUSD": 0.03,

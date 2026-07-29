@@ -69,6 +69,27 @@ def place_trade(
             "reason": f"Position déjà ouverte sur {mt5_symbol} (max 1 par symbole)",
         }
 
+    # ── Anti-concentration corrélée ───────────────────────────────────────────
+    # Mesuré sur 6 mois de returns 1h : BTC/ETH corrélés +0.90, XAU/XAG +0.83.
+    # Ouvrir BTC-buy + ETH-buy = UN pari crypto en taille double, pas 2 trades
+    # (c'est ce qui a amplifié la casse du 20/07). On bloque une 2e position
+    # MÊME SENS dans une paire >0.8. Les corrélations négatives (EURUSD/USDJPY
+    # -0.57) restent autorisées : même sens = hedge, ça réduit le risque.
+    _CORR_GROUPS = [{"BTCUSDm", "ETHUSDm"}, {"XAUUSDm", "XAGUSDm"}]
+    _grp = next((g for g in _CORR_GROUPS if mt5_symbol in g), None)
+    if _grp:
+        for _p in (mt5.positions_get() or []):
+            if _p.symbol in _grp and _p.symbol != mt5_symbol:
+                _p_dir = "buy" if _p.type == 0 else "sell"
+                if _p_dir == action:
+                    return {
+                        "success": False,
+                        "reason": (
+                            f"Position corrélée déjà ouverte ({_p.symbol} {_p_dir}, "
+                            f"corr>0.8) — même pari, pas de doublement"
+                        ),
+                    }
+
     if not mt5.symbol_select(mt5_symbol, True):
         return {"success": False, "reason": f"Cannot select symbol {mt5_symbol}"}
 
@@ -210,12 +231,16 @@ def place_trade(
                     f"du solde ${_acct.balance:.2f}"
                 )
             else:
-                if _min_loss >= _acct.balance * 0.90:
+                # MIXED-OPTIMAL survival cap (2026-07-23): reject any AUTO trade
+                # whose MINIMUM lot still risks >15% of balance. Skips symbols too
+                # big for the account (gold/silver at ~50% on a small balance) until
+                # it grows — the single-trade floor June never had.
+                if _min_loss > _acct.balance * 0.30:
                     return {
                         "success": False,
                         "reason": (
-                            f"Stop-out garanti pour {symbol}: lot min risque "
-                            f"${_min_loss:.2f} ≥ 90% du solde ${_acct.balance:.2f}"
+                            f"Symbole trop gros pour le solde: {symbol} lot min risque "
+                            f"${_min_loss:.2f} > 30% du solde ${_acct.balance:.2f}"
                         ),
                     }
                 if mt5_symbol.upper().endswith(('USD', 'USDM')):

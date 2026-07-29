@@ -1,15 +1,15 @@
 {
   "scoring_weights": {
-    "rsi": 11.3,
-    "stoch": 14.1,
-    "adx": 9.7,
-    "lg_strength": 0.8,
-    "rr_ratio": 1.4,
-    "atr_ratio": 3.8,
-    "pd_pct": 7.1,
-    "htf": 9.7,
-    "structure": 12.6,
-    "pd_zone": 1.4
+    "rsi": 9.6,
+    "stoch": 14.3,
+    "adx": 9.8,
+    "lg_strength": 0.7,
+    "rr_ratio": 0.4,
+    "atr_ratio": 4.9,
+    "pd_pct": 7.8,
+    "htf": 12.3,
+    "structure": 12.2,
+    "pd_zone": 0.0
   },
   "thresholds": {
     "rsi_max_buy": 70,
@@ -20,57 +20,57 @@
   },
   "symbol_performance": {
     "BTC_15m": {
-      "win_rate": 0.388,
-      "trades": 160,
-      "priority": 0.78
+      "win_rate": 0.387,
+      "trades": 163,
+      "priority": 0.77
     },
     "BTC_5m": {
-      "win_rate": 0.417,
-      "trades": 168,
-      "priority": 0.83
-    },
-    "ETH_15m": {
-      "win_rate": 0.399,
-      "trades": 163,
-      "priority": 0.8
-    },
-    "ETH_5m": {
-      "win_rate": 0.308,
-      "trades": 195,
-      "priority": 0.62
-    },
-    "EURUSD_15m": {
       "win_rate": 0.409,
-      "trades": 44,
+      "trades": 176,
       "priority": 0.82
     },
+    "ETH_15m": {
+      "win_rate": 0.395,
+      "trades": 167,
+      "priority": 0.79
+    },
+    "ETH_5m": {
+      "win_rate": 0.305,
+      "trades": 200,
+      "priority": 0.61
+    },
+    "EURUSD_15m": {
+      "win_rate": 0.4,
+      "trades": 45,
+      "priority": 0.8
+    },
     "EURUSD_5m": {
-      "win_rate": 0.389,
-      "trades": 36,
-      "priority": 0.78
+      "win_rate": 0.368,
+      "trades": 38,
+      "priority": 0.74
     },
     "GBPJPY_15m": {
-      "win_rate": 0.2,
-      "trades": 35,
+      "win_rate": 0.194,
+      "trades": 36,
       "priority": 0.5
     },
     "GBPJPY_5m": {
-      "win_rate": 0.469,
-      "trades": 64,
-      "priority": 0.94
+      "win_rate": 0.462,
+      "trades": 65,
+      "priority": 0.92
     },
     "XAUUSD_15m": {
-      "win_rate": 0.446,
-      "trades": 56,
-      "priority": 0.89
+      "win_rate": 0.433,
+      "trades": 60,
+      "priority": 0.87
     },
     "XAUUSD_5m": {
-      "win_rate": 0.435,
-      "trades": 62,
-      "priority": 0.87
+      "win_rate": 0.422,
+      "trades": 64,
+      "priority": 0.84
     }
   },
   "blend_factor": 20,
-  "updated_at": "2026-07-22T17:35:33.015612",
+  "updated_at": "2026-07-28T18:06:41.653826",
   "source": "ml_retrain"
 }
