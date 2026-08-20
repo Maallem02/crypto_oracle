@@ -37,7 +37,7 @@ def get_market_regime(
     """
     from features.market.fetcher import fetch_candles
     from features.smc.engine import calculate_adx
-    from features.trading.data_collector import load_rejections
+    from features.trading.data_collector import count_rejections
 
     try:
         df_1h = fetch_candles(symbol, "1h", limit=50)
@@ -48,21 +48,14 @@ def get_market_regime(
         print(f"[REGIME] {symbol}: ADX error — {e}")
         adx = adx_threshold
 
+    # Comptage fait en SQL (voir count_rejections) : l'ancienne version
+    # chargeait 500 blobs JSON et filtrait la fenêtre en Python.
     cutoff = datetime.now() - timedelta(hours=conflict_window_hours)
-    recent_count = 0
-    try:
-        recent = load_rejections(limit=500, symbol=symbol, reason_contains="htf_conflict_confirmed")
-        for r in recent:
-            ts = r.get("ts")
-            if not ts:
-                continue
-            try:
-                if datetime.fromisoformat(ts) >= cutoff:
-                    recent_count += 1
-            except Exception:
-                continue
-    except Exception as e:
-        print(f"[REGIME] {symbol}: conflict-count error — {e}")
+    recent_count = count_rejections(
+        symbol=symbol,
+        reason_prefix="htf_conflict_confirmed",
+        since=cutoff.isoformat(),
+    )
 
     is_low_adx     = adx < adx_threshold
     is_whipsawing  = recent_count >= conflict_threshold

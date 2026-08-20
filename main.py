@@ -100,6 +100,11 @@ def startup():
     except Exception as e:
         print(f"[SCALP-LOG] Restore skipped: {e}")
     try:
+        from features.trading.meta_gate import load_model as _load_meta
+        _load_meta()
+    except Exception as e:
+        print(f"[META] startup load skipped: {e}")
+    try:
         from features.zones.trainer import load_zone_model
         from features.zones.scorer  import reload_zone_db
         load_zone_model()

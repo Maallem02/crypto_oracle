@@ -1,25 +1,35 @@
+import time
 import MetaTrader5 as mt5
 from datetime import datetime, timezone
-from features.trading.risk_manager import calculate_lot_size, can_trade, get_daily_pnl_pct
-from core.config import runtime
+from features.trading.risk_manager import (
+    calculate_lot_size, can_trade, get_daily_pnl_pct, compute_risk_based_entry, BOT_MAGIC,
+)
 
 # Symboles 24/7 — non concernés par les fenêtres rollover/ouverture forex
 CRYPTO_SYMBOLS = {"BTC", "ETH", "SOL", "BNB", "XRP"}
 
+# Plafond de risque par trade, en fraction du solde. Appliqué DUR : un trade
+# qui dépasse est refusé, pas averti. Voir le garde-fou dans place_trade().
+#
+# 5% -> 7% le 2026-08-12 (choix utilisateur, pour laisser respirer le stop).
+# Effet mesuré sur l'or à 81.96$ de solde : le stop maximal passe de 4.10 à
+# 5.74 points, soit 0.72xATR -> 1.00xATR, et le repli exigé pour remplir la
+# limite tombe de 1.8xATR à 1.5xATR. Contrepartie : une série de 10 pertes
+# coûte 52% au lieu de 40%.
+MAX_RISK_PCT = 0.07
+
 def _mt5_init():
-    """Force re-login on every call to prevent stale connections."""
-    import os
-    kwargs = {"timeout": 10000}
-    if runtime.mt5_path:
-        kwargs["path"] = runtime.mt5_path
-    login_id = os.getenv("MT5_LOGIN")
-    password  = os.getenv("MT5_PASSWORD")
-    server    = os.getenv("MT5_SERVER")
-    if login_id and password and server:
-        kwargs["login"]    = int(login_id)
-        kwargs["password"] = password
-        kwargs["server"]   = server
-    mt5.initialize(**kwargs)
+    """
+    Attache le terminal (idempotent) — délègue à mt5_client.ensure_mt5().
+
+    L'ancienne version forçait mt5.initialize(login=...) à CHAQUE appel,
+    donc à chaque place_trade(). C'était exactement le re-login que
+    router._mt5_init() avait été écrit pour supprimer : le terminal
+    basculait du compte réel ouvert manuellement vers le compte demo à
+    chaque ordre placé.
+    """
+    from features.trading.mt5_client import ensure_mt5
+    ensure_mt5()
 
 # Mapping symboles → MT5
 SYMBOL_MAP = {
@@ -196,7 +206,7 @@ def place_trade(
     _acct = mt5.account_info()
     if _acct and _acct.balance > 0:
         point   = symbol_info.point
-        _max5   = _acct.balance * 0.05
+        _max5   = _acct.balance * MAX_RISK_PCT
         _max10  = _acct.balance * 0.10
         _cs     = symbol_info.trade_contract_size if symbol_info.trade_contract_size > 0 else 1.0
         _ts     = symbol_info.trade_tick_size      if symbol_info.trade_tick_size  > 0 else point
@@ -211,25 +221,32 @@ def place_trade(
             _min_loss = symbol_info.volume_min * _ticks * _tv
 
         if _est_loss > _max5:
-            # Choix utilisateur 2026-07-16 : les lots FIXES de l'app s'exécutent
-            # TELS QUELS quel que soit le solde — aucun clamp. Seule limite :
-            # si le SL du lot demandé risque ≥90% du solde, le broker ferait
-            # un stop-out AVANT le SL (wipe du 13/07) — trade non exécutable
-            # comme conçu, donc rejeté. Les lots AUTO gardent le clamp 5%.
+            # ── PLAFOND DUR À max_risk_pct — 2026-08-12 ──────────────────
+            # L'ancienne règle laissait passer TOUT lot fixe jusqu'à 90% du
+            # solde, en se contentant d'un avertissement. Conséquence réelle :
+            # XAUUSD 0.01 lot, stop 16.12 points, -16.24$ sur un compte de
+            # 81.96$ — 19.7% perdus sur un seul trade, alors que le réglage
+            # affichait "5% de risque".
+            #
+            # L'or vaut 100$ le point à 0.01 lot : un stop structurel de 16
+            # points coûte 16$ quoi qu'il arrive. Aucun réglage de lot ne
+            # corrige ça (0.01 est déjà le minimum broker) — le seul choix
+            # honnête est de ne pas prendre le trade.
+            #
+            # La voie "entrée optimale" (compute_risk_based_entry) place une
+            # limite plus près du SL pour atteindre exactement le pourcentage
+            # visé ; elle est tentée en amont côté router. Si on arrive ici,
+            # c'est qu'elle n'a pas pu s'appliquer — on refuse.
             if _lot_is_fixed:
-                if _est_loss >= _acct.balance * 0.90:
-                    return {
-                        "success": False,
-                        "reason": (
-                            f"Stop-out garanti pour {symbol}: lot {lot_size} risque "
-                            f"${_est_loss:.2f} ≥ 90% du solde ${_acct.balance:.2f}"
-                        ),
-                    }
-                print(
-                    f"[BALANCE GUARD] {symbol} lot fixe {lot_size} respecté — "
-                    f"risque ${_est_loss:.2f} = {100*_est_loss/_acct.balance:.0f}% "
-                    f"du solde ${_acct.balance:.2f}"
-                )
+                return {
+                    "success": False,
+                    "reason": (
+                        f"Risque trop élevé pour {symbol}: lot {lot_size} risque "
+                        f"${_est_loss:.2f} = {100*_est_loss/_acct.balance:.0f}% du solde "
+                        f"${_acct.balance:.2f} (plafond {100*MAX_RISK_PCT:.0f}%). "
+                        f"Stop {real_risk:.5g} trop large pour ce solde."
+                    ),
+                }
             else:
                 # MIXED-OPTIMAL survival cap (2026-07-23): reject any AUTO trade
                 # whose MINIMUM lot still risks >15% of balance. Skips symbols too
@@ -337,6 +354,253 @@ def place_trade(
         "sl":      sl,
         "tp":      tp1,
     }
+
+
+def place_pending_trade(
+    symbol:         str,
+    action:         str,
+    entry_price:    float,   # computed optimal entry — closer to SL than market
+    sl:             float,
+    tp1:            float,
+    confidence:     float,
+    fixed_lot:      float,
+    expire_minutes: int = 30,   # cancel automatically if not filled in time
+) -> dict:
+    """
+    Places a LIMIT order at entry_price instead of a market order, so a
+    fixed lot ends up risking a controlled % of the account instead of
+    whatever the market-price SL distance happens to be. SL is passed in
+    exactly as computed upstream (structurally placed) — this function
+    never moves it.
+
+    Expires automatically via MT5's own ORDER_TIME_SPECIFIED if price never
+    retraces to entry_price — no separate cancellation job needed.
+    """
+    _mt5_init()
+
+    if not can_trade(3):
+        return {"success": False, "reason": "Max trades reached"}
+
+    mt5_symbol = SYMBOL_MAP.get(symbol.upper())
+    if not mt5_symbol:
+        return {"success": False, "reason": f"Symbol {symbol} not supported"}
+
+    _existing = mt5.positions_get(symbol=mt5_symbol)
+    if _existing:
+        return {
+            "success": False,
+            "reason": f"Position déjà ouverte sur {mt5_symbol} (max 1 par symbole)",
+        }
+
+    # Also check for an existing PENDING order on this symbol from this bot,
+    # so we don't stack multiple limit orders waiting on the same setup.
+    _existing_pending = mt5.orders_get(symbol=mt5_symbol)
+    if _existing_pending:
+        _bot_pending = [o for o in _existing_pending if o.magic == 234000]
+        if _bot_pending:
+            return {
+                "success": False,
+                "reason": f"Pending order déjà en attente sur {mt5_symbol}",
+            }
+
+    if not mt5.symbol_select(mt5_symbol, True):
+        return {"success": False, "reason": f"Cannot select symbol {mt5_symbol}"}
+
+    symbol_info = mt5.symbol_info(mt5_symbol)
+    if symbol_info is None:
+        return {"success": False, "reason": f"Symbol info not found for {mt5_symbol}"}
+
+    tick = mt5.symbol_info_tick(mt5_symbol)
+    if tick is None:
+        return {"success": False, "reason": f"No tick data for {mt5_symbol}"}
+
+    current_price = tick.ask if action == "buy" else tick.bid
+
+    order_type = mt5.ORDER_TYPE_BUY_LIMIT if action == "buy" else mt5.ORDER_TYPE_SELL_LIMIT
+
+    # Sanity: a buy-limit must sit below current price, sell-limit above.
+    # If it doesn't (price already moved through the level), the setup has
+    # already played out — reject rather than placing an invalid order.
+    if action == "buy" and entry_price >= current_price:
+        return {
+            "success": False,
+            "reason": f"buy-limit entry {entry_price} not below market {current_price} — setup already ran",
+        }
+    if action == "sell" and entry_price <= current_price:
+        return {
+            "success": False,
+            "reason": f"sell-limit entry {entry_price} not above market {current_price} — setup already ran",
+        }
+
+    lot_size = max(symbol_info.volume_min, min(symbol_info.volume_max, fixed_lot))
+    lot_size = round(lot_size, 2)
+
+    point    = symbol_info.point
+    min_dist = symbol_info.trade_stops_level * point
+    if min_dist == 0:
+        min_dist = point * 10
+
+    if action == "buy":
+        sl_final  = min(sl, entry_price - min_dist)
+        tp1_final = max(tp1, entry_price + min_dist)
+    else:
+        sl_final  = max(sl, entry_price + min_dist)
+        tp1_final = min(tp1, entry_price - min_dist)
+
+    request = {
+        "action":       mt5.TRADE_ACTION_PENDING,
+        "symbol":       mt5_symbol,
+        "volume":       lot_size,
+        "type":         order_type,
+        "price":        round(entry_price, 5),
+        "sl":           round(sl_final, 5),
+        "tp":           round(tp1_final, 5),
+        "deviation":    20,
+        "magic":        234000,
+        "comment":      f"CryptoOracle-P {confidence*100:.0f}%",
+    }
+
+    expiration = None
+    if expire_minutes and expire_minutes > 0:
+        from datetime import timedelta
+        expiration = datetime.now(timezone.utc) + timedelta(minutes=expire_minutes)
+        request["type_time"]  = mt5.ORDER_TIME_SPECIFIED
+        request["expiration"] = expiration
+    else:
+        # GTC: no expiration — order stays live until filled or manually
+        # cancelled. Broker-dependent whether GTC pending orders survive
+        # a platform restart; MT5 itself keeps them indefinitely.
+        request["type_time"] = mt5.ORDER_TIME_GTC
+
+    result = mt5.order_send(request)
+
+    if result is None:
+        return {"success": False, "reason": f"order_send returned None: {mt5.last_error()}"}
+
+    if result.retcode not in (mt5.TRADE_RETCODE_DONE, mt5.TRADE_RETCODE_PLACED):
+        return {
+            "success": False,
+            "reason":  f"Pending order failed: {result.comment or result.retcode}",
+            "retcode": result.retcode,
+        }
+
+    return {
+        "success":      True,
+        "ticket":       result.order,
+        "symbol":       mt5_symbol,
+        "action":       action,
+        "volume":       lot_size,
+        "price":        entry_price,
+        "sl":           sl_final,
+        "tp":           tp1_final,
+        "expires_at":   expiration.isoformat() if expiration else None,
+        "pending":      True,
+    }
+
+
+def get_pending_orders() -> list:
+    """Ordres en attente placés par le bot (magic=BOT_MAGIC)."""
+    _mt5_init()
+    orders = mt5.orders_get() or []
+    out = []
+    for o in orders:
+        if o.magic != BOT_MAGIC:
+            continue
+        tick = mt5.symbol_info_tick(o.symbol)
+        # time_setup et tick.time sont tous deux exprimés dans l'horloge
+        # SERVEUR du broker (quirk MT5 : ce n'est pas de l'epoch UTC réel —
+        # cf. le calcul de fenêtre rollover plus haut). Les comparer entre eux
+        # est donc juste — MAIS SEULEMENT TANT QUE LE FLUX AVANCE.
+        #
+        # Marché fermé (week-end, jour férié), tick.time GÈLE sur le dernier
+        # tick : l'âge cesse d'avancer et le plafond pending_max_age_minutes
+        # ne voit jamais l'ordre vieillir. Mesuré le 2026-08-16 (dimanche) :
+        #
+        #   XAUUSDm posé vendredi 14:04, dernier tick vendredi 21:57
+        #   -> âge annoncé 473.5 min alors que l'âge réel était 3279.7 min
+        #
+        # L'ordre repartait donc vivant à l'ouverture du lundi en portant les
+        # niveaux de vendredi (limite à 4366.193, stop à 4.4 points), et la
+        # purge ne le rattrapait qu'après 6 minutes de cotation.
+        #
+        # On prend le MAX des deux horloges : le flux reste la référence en
+        # séance (immunisé au décalage de fuseau serveur/local), l'horloge
+        # murale prend le relais dès que le marché ferme. Le max ne peut que
+        # vieillir un ordre, jamais le rajeunir — donc jamais d'annulation
+        # prématurée si les deux horloges divergent.
+        tick_age = (tick.time - o.time_setup) / 60.0 if tick else None
+        wall_age = (time.time() - o.time_setup) / 60.0
+        age_min  = round(wall_age if tick_age is None else max(tick_age, wall_age), 1)
+        out.append({
+            "ticket":      o.ticket,
+            "symbol":      o.symbol,
+            "type":        "buy_limit" if o.type == mt5.ORDER_TYPE_BUY_LIMIT else
+                           "sell_limit" if o.type == mt5.ORDER_TYPE_SELL_LIMIT else str(o.type),
+            "volume":      o.volume_current,
+            "price_open":  o.price_open,
+            "sl":          o.sl,
+            "tp":          o.tp,
+            "age_minutes": age_min,
+            "comment":     o.comment,
+        })
+    return out
+
+
+def cancel_pending_order(ticket: int) -> dict:
+    """Annule UN ordre en attente par son ticket."""
+    _mt5_init()
+    result = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": int(ticket)})
+    if result is None:
+        return {"success": False, "ticket": ticket,
+                "reason": f"order_send returned None: {mt5.last_error()}"}
+    ok = result.retcode == mt5.TRADE_RETCODE_DONE
+    return {"success": ok, "ticket": ticket, "retcode": result.retcode,
+            "reason": None if ok else (result.comment or f"code {result.retcode}")}
+
+
+def cancel_stale_pending_orders(max_age_minutes: int = 120, symbol: str = None) -> list:
+    """
+    Annule les ordres en attente du bot plus vieux que max_age_minutes.
+
+    Pourquoi c'est nécessaire : avec pending_expire_minutes=0 (GTC, choix
+    utilisateur) l'ordre n'expire JAMAIS côté broker. Il survit à l'arrêt du
+    bot — il vit sur le serveur du broker, pas dans le process. Et comme
+    place_pending_trade() refuse un 2e ordre en attente sur le même symbole,
+    un ordre jamais rempli bloque ce symbole indéfiniment pour tout nouveau
+    signal. Ce garde-fou est côté bot, donc GTC reste utilisable sans risque
+    de blocage permanent.
+
+    max_age_minutes <= 0 → désactivé (GTC pur, comportement d'origine).
+    symbol facultatif : restreint à un symbole (utilisé par l'endpoint manuel).
+    """
+    force = max_age_minutes is None          # endpoint manuel : âge ignoré
+    if not force and max_age_minutes <= 0:
+        return []
+
+    cancelled = []
+    for o in get_pending_orders():
+        if symbol and symbol.upper() not in o["symbol"].upper():
+            continue
+        age = o["age_minutes"]
+        if not force:
+            # age vient de get_pending_orders() : max(horloge flux, horloge
+            # murale), donc il continue d'avancer marché fermé. Un ordre posé
+            # vendredi est bien périmé lundi. (None ne devrait plus arriver —
+            # garde défensive.)
+            if age is None or age < max_age_minutes:
+                continue
+        res = cancel_pending_order(o["ticket"])
+        res.update({"symbol": o["symbol"], "age_minutes": age,
+                    "price_open": o["price_open"]})
+        cancelled.append(res)
+        if res["success"]:
+            _why = ("annulation manuelle" if force else
+                    f"{age:.0f}min sans exécution (max {max_age_minutes})")
+            print(f"[PENDING/CANCEL] {o['symbol']} ticket={o['ticket']} "
+                  f"@ {o['price_open']} - {_why} -> annule, symbole debloque")
+        else:
+            print(f"[PENDING/ERR] {o['symbol']} ticket={o['ticket']}: {res['reason']}")
+    return cancelled
 
 
 def close_all_trades():

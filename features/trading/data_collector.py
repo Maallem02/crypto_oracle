@@ -132,6 +132,12 @@ def init_signals_table():
             conn.execute(f"ALTER TABLE trade_signals ADD COLUMN {col} {col_type}")
             print(f"[OK] Migration: colonne '{col}' ajoutee a trade_signals")
 
+    # ticket : lu par _track_excursion (toutes les 30s, par position ouverte)
+    # et écrit par check_and_update_outcomes / update_excursion.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_ticket ON trade_signals(ticket)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_symbol_outcome "
+                 "ON trade_signals(symbol, outcome)")
+
     conn.commit()
     conn.close()
 
@@ -169,6 +175,12 @@ def init_scalp_log_table():
     for col, col_type in [("outcome", "INTEGER"), ("profit", "REAL"), ("closed_at", "TEXT")]:
         if col not in existing:
             conn.execute(f"ALTER TABLE scalp_log ADD COLUMN {col} {col_type}")
+    # check_symbol_loss_streaks / _update_direction_locks interrogent
+    # (symbol, action, timestamp) à chaque scan ; check_and_update_outcomes
+    # met à jour par ticket pour chaque deal fermé.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scalp_symbol_ts "
+                 "ON scalp_log(symbol, timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_scalp_ticket ON scalp_log(ticket)")
     conn.commit()
     conn.close()
 
@@ -236,6 +248,14 @@ def init_rejection_log_table():
     existing = {row[1] for row in conn.execute("PRAGMA table_info(rejection_log)").fetchall()}
     if "signal_type" not in existing:
         conn.execute("ALTER TABLE rejection_log ADD COLUMN signal_type TEXT")
+    # (symbol, timestamp) sert count_rejections() : appelé une fois par symbole
+    # et par minute par le détecteur de régime. Sans index c'était un scan
+    # complet de 1.3M lignes mesuré à 0.29s — soit ~1.5s de chaque minute
+    # passées dans cette seule requête.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rejection_symbol_ts "
+                 "ON rejection_log(symbol, timestamp)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_rejection_id_desc "
+                 "ON rejection_log(symbol, id DESC)")
     conn.commit()
     conn.close()
 
@@ -291,6 +311,33 @@ def load_rejections(limit: int = 500, symbol: str = None, reason_contains: str =
     except Exception as e:
         print(f"[REJECTION-LOG] load failed: {e}")
         return []
+
+
+def count_rejections(symbol: str, reason_prefix: str, since: str) -> int:
+    """
+    Compte les rejections d'un symbole depuis un timestamp ISO, sans charger
+    ni désérialiser les lignes.
+
+    Remplace, pour le détecteur de régime, un load_rejections(limit=500,
+    reason_contains=...) qui faisait `reason LIKE '%x%' OR data LIKE '%x%'`
+    (deux LIKE non-sargables sur un blob JSON, donc scan complet de 1.3M
+    lignes : 0.29s mesurées), ramenait 500 blobs, les parsait tous en JSON,
+    puis filtrait la fenêtre temporelle en Python — pour n'en garder que
+    quelques-uns. Ici le filtre temporel et le comptage sont faits par SQLite
+    via idx_rejection_symbol_ts, et `reason LIKE 'prefix%'` reste sargable.
+    """
+    try:
+        conn = get_db()
+        row = conn.execute(
+            "SELECT COUNT(*) FROM rejection_log "
+            "WHERE symbol = ? AND timestamp >= ? AND reason LIKE ?",
+            (symbol, since, f"{reason_prefix}%"),
+        ).fetchone()
+        conn.close()
+        return int(row[0]) if row else 0
+    except Exception as e:
+        print(f"[REJECTION-LOG] count failed: {e}")
+        return 0
 
 
 def save_signal(

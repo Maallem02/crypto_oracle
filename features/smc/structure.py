@@ -4,26 +4,34 @@ import numpy as np
 
 
 def detect_swings(df: pd.DataFrame, lookback: int = 5) -> pd.DataFrame:
+    """
+    Marque chaque bougie qui est le plus haut (ou plus bas) de sa fenêtre
+    centrée de 2*lookback+1 bougies.
+
+    Version vectorisée (2026-08-01). L'ancienne implémentation bouclait en
+    Python sur chaque bougie en re-découpant deux slices pandas + .max()/.min()
+    à chaque tour : ~250 opérations pandas par appel, et la fonction est
+    appelée deux fois sur la même frame à chaque analyse (une fois par
+    detect_market_structure, une fois par detect_fresh_choch).
+
+    Strictement équivalent à l'ancienne boucle :
+      - rolling(2*lookback+1, center=True) EST la fenêtre iloc[i-lb : i+lb+1]
+      - les bords sont NaN, et `valeur >= NaN` vaut False — ce qui reproduit
+        exactement l'ancien range(lookback, len(df)-lookback)
+      - >= / <= conservés pour gérer les doubles hauts/bas (deux bougies au
+        même niveau comptent toutes les deux)
+    """
     df = df.copy()
-    df['swing_high'] = False
-    df['swing_low']  = False
-    
+
     if len(df) < lookback * 2 + 1:
+        df['swing_high'] = False
+        df['swing_low']  = False
         return df
-    
-    for i in range(lookback, len(df) - lookback):
-        window_high = df['high'].iloc[i - lookback:i + lookback + 1]
-        window_low  = df['low'].iloc[i - lookback:i + lookback + 1]
-        
-        if len(window_high) == 0 or len(window_low) == 0:
-            continue
-            
-        # >= pour gérer les doubles hauts/bas (deux bougies au même niveau)
-        if df['high'].iloc[i] >= window_high.max():
-            df.at[df.index[i], 'swing_high'] = True
-        if df['low'].iloc[i] <= window_low.min():
-            df.at[df.index[i], 'swing_low'] = True
-    
+
+    window = lookback * 2 + 1
+    df['swing_high'] = df['high'] >= df['high'].rolling(window, center=True).max()
+    df['swing_low']  = df['low']  <= df['low'].rolling(window, center=True).min()
+
     return df
 
 def detect_market_structure(df: pd.DataFrame) -> dict:

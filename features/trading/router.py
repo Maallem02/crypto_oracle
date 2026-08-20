@@ -7,55 +7,18 @@ from features.trading.mt5_client import connect, disconnect
 from core.config import runtime
 
 def _mt5_init():
-    """
-    Initialise MT5 avec credentials.
-
-    IDEMPOTENT: si le terminal est déjà connecté au bon compte, ne fait RIEN.
-    L'ancienne version forçait mt5.initialize(login=...) à CHAQUE appel
-    (toutes les 30s via manage_open_positions) — chaque appel re-loggait le
-    terminal sur le compte demo, écrasant toute session manuelle (compte réel)
-    ouverte dans le GUI → le terminal basculait de compte toutes les
-    quelques secondes.
-
-    Le re-login forcé n'est conservé que pour les cas où il est nécessaire :
-    terminal déconnecté ou connecté au MAUVAIS compte (résout aussi le
-    retcode 10027 dans les threads du scheduler, car le premier appel de
-    chaque thread passe encore par le login explicite si besoin).
-    """
-    import os
-    login_id = os.getenv("MT5_LOGIN")
-    password  = os.getenv("MT5_PASSWORD")
-    server    = os.getenv("MT5_SERVER")
-
-    # Déjà connecté au bon compte → no-op (pas de re-login, pas de bascule)
-    try:
-        acc = mt5.account_info()
-        if acc and (not login_id or acc.login == int(login_id)):
-            return
-    except Exception:
-        pass
-
-    if login_id and password and server:
-        mt5.initialize(
-            login    = int(login_id),
-            password = password,
-            server   = server,
-            timeout  = 10000,
-        )
-        return
-
-    # Fallback: connexion sans credentials (si déjà connecté)
-    if mt5.terminal_info() is None:
-        kwargs = {"timeout": 10000}
-        if runtime.mt5_path:
-            kwargs["path"] = runtime.mt5_path
-        mt5.initialize(**kwargs)
-from features.trading.executor import place_trade, close_all_trades, get_open_trades, SYMBOL_MAP
+    """Attache le terminal (idempotent) — voir mt5_client.ensure_mt5()."""
+    from features.trading.mt5_client import ensure_mt5
+    ensure_mt5()
+from features.trading.executor import (
+    place_trade, place_pending_trade, close_all_trades, get_open_trades, SYMBOL_MAP,
+    get_pending_orders, cancel_pending_order, cancel_stale_pending_orders,
+)
 from features.market.fetcher import fetch_candles
 from features.smc.engine import run_smc_analysis, run_scalping_analysis
 from features.smc.structure import detect_market_structure
 from features.trading.data_collector import save_signal, check_and_update_outcomes, get_stats, get_training_data
-from features.trading.risk_manager import get_daily_pnl_pct
+from features.trading.risk_manager import get_daily_pnl_pct, compute_risk_based_entry
 from features.trading.ml_model import predict_win_probability, predict_decision, maybe_retrain, load_model, train_model, get_model_info, get_lot_multiplier
 
 router = APIRouter(prefix="/trading", tags=["trading"])
@@ -228,7 +191,15 @@ def bot_status():
     }
 
 @router.get("/bot/scan")
-def scan_and_trade():
+def scan_and_trade(execute: bool = False):
+    """
+    Scan manuel du bot "normal" (chemin legacy, non-scalping).
+
+    DRY-RUN PAR DÉFAUT depuis 2026-08-01. Cet endpoint plaçait des ordres
+    réels sur un simple GET : n'importe quel prefetch de navigateur, sonde
+    de monitoring ou retry du tunnel cloudflared déclenchait des trades.
+    Passer ?execute=true pour réellement exécuter (comportement d'avant).
+    """
     settings = bot_state["settings"]
     if not settings.get("enabled_symbols"):
         settings = TradeSettings().dict()
@@ -298,6 +269,15 @@ def scan_and_trade():
                             tp1    = round(float(sl_), 5)
                         src = "structure"
 
+                    if not execute:
+                        results[-1]["would_trade"] = {
+                            "action": bias, "entry": entry, "sl": sl, "tp1": tp1,
+                        }
+                        results[-1]["entry_src"] = src
+                        results[-1]["score"]     = confluence_score
+                        results[-1]["dry_run"]   = True
+                        continue
+
                     trade = place_trade(
                         symbol=       symbol,
                         action=       bias,
@@ -327,7 +307,7 @@ def scan_and_trade():
                 results.append({"symbol": symbol, "timeframe": tf, "error": str(e)})
 
     bot_state["last_scan"] = datetime.now().isoformat()
-    return {"scanned": len(results), "results": results}
+    return {"scanned": len(results), "dry_run": not execute, "results": results}
 
 @router.get("/bot/history")
 def get_history():
@@ -340,6 +320,29 @@ def open_trades():
 @router.post("/trades/close-all")
 def close_trades():
     return {"results": close_all_trades()}
+
+@router.get("/pending")
+def list_pending():
+    """Ordres en attente du bot, avec leur âge en minutes (horloge serveur)."""
+    orders = get_pending_orders()
+    return {"count": len(orders), "orders": orders,
+            "max_age_minutes": scalp_state["settings"].get("pending_max_age_minutes", 120)}
+
+@router.post("/pending/cancel/{symbol}")
+def cancel_pending_for_symbol(symbol: str):
+    """
+    Annule MAINTENANT les ordres en attente du bot sur ce symbole, quel que
+    soit leur âge — débloque un symbole coincé derrière un GTC non exécuté
+    sans attendre pending_max_age_minutes.
+    """
+    res = cancel_stale_pending_orders(max_age_minutes=None, symbol=symbol)
+    return {"success": all(r["success"] for r in res) if res else True,
+            "cancelled": res, "count": len(res)}
+
+@router.post("/pending/cancel-ticket/{ticket}")
+def cancel_pending_by_ticket(ticket: int):
+    """Annule un ordre en attente précis."""
+    return cancel_pending_order(ticket)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SCALPING MODE
@@ -357,6 +360,99 @@ class ScalpingSettings(BaseModel):
     htf_timeframe:      List[str]  = ["5m", "1h"]
     lot_sizes:          dict       = {"BTC": 0.02, "ETH": 0.28, "XAUUSD": 0.01, "GBPJPY": 0.05, "EURUSD": 0.03}
     ml_threshold:       float      = 0.0
+    pending_entry_enabled: bool    = True    # 2026-07-30: risk-controlled limit-order entries (default ON per user — no UI toggle yet)
+    target_risk_pct:       float   = 7.0     # % of balance visé via le prix d'entrée (pas le lot).
+                                             # Aligné sur executor.MAX_RISK_PCT (7%) le 2026-08-12 :
+                                             # viser 5% sous un plafond de 7% laissait la limite
+                                             # inutilement proche du SL.
+    pending_expire_minutes: int    = 0       # 0 = GTC, no expiration (per user 2026-07-30)
+    # ── Filtres qualité d'entrée (mesurés sur 36 643 signaux, 2026-08-01) ──
+    # Mesuré EN PLUS du filtre de tendance par timeframe déjà en place, et NET
+    # d'un coût réaliste de spread+slippage de 0.04R (le dataset offline label-
+    # lise sur prix bruts, sans frais — l'ignorer surestime tous les filtres) :
+    #
+    #   config                     n      avg R    R total    R net de frais
+    #   Gate B seul (avant)     23 645   +0.0770    +1821         +875
+    #   + 4H                    21 703   +0.1087    +2360        +1491   <-- retenu
+    #   + 4H + ADX>=20          13 180   +0.1185    +1562        +1035
+    #   + 4H + P/D hors équil.  12 108   +0.1172    +1420         +935
+    #   + les trois              7 608   +0.1552    +1180         +876
+    #
+    # Seul le filtre 4H mérite d'être actif : il retire des trades à -0.277R de
+    # moyenne (vraie perte) tout en gardant 92% du volume. Les deux autres
+    # retirent des trades PROFITABLES (+0.098R et +0.053R) : ils remontent la
+    # moyenne par trade mais jettent du profit — empilés, ils ramènent au même
+    # résultat net qu'avant. Laissés disponibles mais désactivés.
+    # Gestion de sortie — rejeu barre par barre de 23 645 signaux (2026-08-01).
+    # La politique live (BE 1.5R + trail) bat largement le bracket pur
+    # (+0.1696 vs +0.0770 R/trade) : le BE n'est PAS le problème, retirer
+    # l'étape BE ne change rien (-0.0027R). Le vrai levier est le déclenchement
+    # du trail : 70% -> 40% vaut +0.041R par trade, confirmé hors échantillon.
+    # Déclenchement du trail en R (2026-08-10). Remplace trail_start_pct, qui
+    # exprimait le seuil en % de la distance au TP : équivalent à RR 2.5 (0.40
+    # x 2.5 = 1.0R) mais inopérant dès que les entrées limites poussent le RR
+    # à 6-25, où 40% du TP vaut 2.5R à 10R. Mesuré : +0.47R/trade sur les
+    # entrées limites, et STRICTEMENT identique (100% des trades) sur les
+    # entrées au marché. trail_start_pct est conservé comme repli pour les
+    # settings déjà enregistrés.
+    trail_start_r:         float   = 1.0     # R de profit avant d'activer le trail
+    trail_start_pct:       float   = 0.40    # repli historique (= 1.0R à RR 2.5)
+    be_trigger_r:          float   = 1.5     # R de profit avant passage à breakeven
+
+    # Meta-model gate — DÉSARMÉ le 2026-08-14, retour en observation.
+    #
+    # Armé le 08-13 sur 6 trades (Spearman +0.886, p permutation 0.051). Avec
+    # 352 signaux notés sur 27 heures, le classement s'INVERSE.
+    #
+    # Test apparié à l'intérieur de chaque heure — la bonne façon de comparer,
+    # car 352 signaux sur 27h ne sont pas 352 observations indépendantes mais
+    # les mêmes conditions de marché répétées sur 5 symboles :
+    #   15 heures contiennent à la fois un signal accepté et un refusé
+    #   accepté  -0.292R      refusé  +0.202R
+    #   écart apparié -0.494R   IC 95% [-0.839, -0.149]  -> exclut zéro
+    #
+    # Les signaux que le gate LAISSE PASSER font moins bien que ceux qu'il
+    # BLOQUE, à heure et instrument identiques. Et aucun seuil ne bat
+    # l'absence de seuil : tout garder = -0.037R, seuil 0.5155 = -0.284R.
+    #
+    # Déciles de score (du plus bas au plus haut) : +0.511, +0.444, +0.515,
+    # +0.133, -0.058, -0.270, -0.382, -0.390, -0.090, -0.343. Monotone à
+    # l'envers.
+    #
+    # Contre-indice honnête : les 10 vrais trades notés donnent Spearman
+    # +0.576 (p=0.082), soit l'inverse — mais l'échantillon est minuscule et
+    # concentré sur les scores hauts (6 sur 10 au-dessus de 0.5), donc il ne
+    # couvre pas la zone où l'inversion se produit. Le test apparié l'emporte.
+    #
+    # Le modèle continue de noter et de journaliser. À réévaluer sur 30+ trades
+    # réels avec score avant tout nouvel armement.
+    #
+    # Sécurité : predict_r() renvoie None si le modèle manque, si l'historique
+    # est trop court ou si l'analyse est incomplète — dans ce cas le trade
+    # PASSE. Un échec de notation ne doit jamais bloquer silencieusement.
+    meta_gate_enabled:     bool          = False
+    meta_gate_threshold:   float | None  = None
+
+    htf_4h_filter_enabled: bool    = True    # ne jamais trader contre la pente EMA20 4H
+    skip_equilibrium_pd:   bool    = False   # refuse les entrées entre 35% et 65% du range
+    min_adx:               float   = 0.0     # 0 = désactivé (l'engine bloque quand même <10)
+
+    # Expiry des ordres en attente — 120 -> 480 min (2026-08-08).
+    # Rejeu des 37 ordres annulés de la semaine 08-03, avec la politique de
+    # sortie live :
+    #    120 min (avant) :  5 remplis, +5.4R
+    #    480 min         : 18 remplis, +6.4R   <- retenu
+    #   1440 min         : 23 remplis, +12.6R
+    # Le délai de remplissage réel est court (75% en 30 min, 95% en 120 min) :
+    # allonger ne sert qu'aux replis lents. 1440 mesure mieux mais immobilise
+    # un symbole 24h sur un signal devenu obsolète, et ces 37 ordres viennent
+    # tous d'une semaine haussière. 480 prend l'essentiel du gain sans parier
+    # sur la persistance du régime. Monter à 1440 si le résultat se confirme.
+    pending_max_age_minutes: int   = 480     # 2026-08-01: filet de sécurité côté bot pour
+                                             # le GTC ci-dessus. Le broker n'expirera jamais
+                                             # l'ordre ; manage_open_positions l'annule après
+                                             # ce délai pour ne pas bloquer le symbole
+                                             # indéfiniment. 0 = désactivé (GTC pur).
 
     @field_validator('htf_timeframe', mode='before')
     @classmethod
@@ -406,9 +502,60 @@ scalp_state = {
 
 import threading
 
+# ── Stratégies de repli (fallback) — désactivées globalement ────────────────
+# Étaient pilotées par des variables locales `_sr_allowed = False` /
+# `_m1_allowed = False` codées en dur au milieu de la boucle de scan.
+# Remontées ici pour que réactiver soit un changement d'une ligne, et pour
+# que la boucle puisse sauter le bloc entier (et sa journalisation) quand
+# une stratégie est éteinte.
+# ── Symboles bloqués au niveau CODE (2026-08-08) ────────────────────────────
+# Volontairement ici et pas dans les settings : l'app renvoie sa propre liste
+# de symboles à chaque /scalping/start et écrase le fichier de settings — ces
+# deux paires y étaient déjà revenues une fois. Ce garde-fou survit à ça.
+#
+# Mesuré sur tout l'historique (525 trades clôturés) :
+#   GBPJPY  n=39  23.1% WR  -67.90$  moyenne -1.74$ +-0.98  (IC exclut zéro)
+#   USDJPY  n=22  18.2% WR  -20.20$  moyenne -0.92$ +-1.79  (non concluant seul)
+#   tous les autres symboles : 33.8% WR
+#   cumulé JPY : 61 trades, 21.3% WR, -88.10$
+# USDJPY seul n'est pas statistiquement concluant, mais même famille, même
+# sens, et 0 gain sur 5 la semaine du 08-03. Retirer une paire de la liste
+# ci-dessous suffit à la réactiver.
+# XAGUSD ajouté le 2026-08-20. Le dossier le plus net du bot :
+#   tout l'historique : 24 trades, 20.8% WR, -63.35$
+#   semaine 08-17→20  : 0 sur 3, -11.70$, MFE moyen +0.00R
+# "MFE +0.00R" = les trois trades n'ont JAMAIS coté un seul tick en vert.
+# Le mécanisme est compris, pas seulement constaté : le lot minimum vaut
+# 50 onces, donc 1$ de mouvement = 50$ de P&L. Le budget de 7% du solde se
+# traduit par une distance entrée→SL de ~0.085, soit 0.54xATR — la largeur
+# du bruit. compute_risk_based_entry ne peut pas faire mieux : le SL est
+# structurel, le lot est déjà au minimum broker. L'argent se perd à
+# l'entrée, aucun réglage de sortie ne rattrape ça.
+# Silver déclenche aussi le plafond de risque en permanence (46% du solde
+# au lot minimum) — 18 rejets executor sur la seule journée du 08-15.
+BLOCKED_SYMBOLS = {"GBPJPY", "USDJPY", "XAGUSD"}
+
+PA_FALLBACK_ENABLED = True    # Price action : +0.147R hors échantillon (2026-08-01)
+                              # Tourne en PASSE INDÉPENDANTE après la boucle
+                              # timeframe, pas seulement quand LG rate son score.
+
+# ── S/R et M1 : DÉBRANCHÉS, pas seulement désactivés ────────────────────────
+# Leur code d'appel a été retiré lors de la restructuration price-action du
+# 2026-08-01. Remettre ces drapeaux à True ne fera RIEN — il faudrait recâbler
+# les appels. Conservés comme trace de la décision, pas comme interrupteurs.
+#   S/R : 31% WR, -$51 sur 200 trades
+#   M1  : 27% WR, -$24.07 sur 74 trades, sous le seuil RR2.5 (28.6%) ; il
+#         contournait les gates zone/blended/macro-4H et a produit toute la
+#         série perdante du 07-10→07-11 (8 SL d'affilée).
+SR_FALLBACK_ENABLED = False   # débranché — voir ci-dessus
+M1_FALLBACK_ENABLED = False   # débranché — voir ci-dessus
+
 scalp_history        = []
 scalp_cooldowns      = {}   # {symbol: datetime expiry}
 symbol_paused_until  = {}   # {symbol: datetime} — paused after 3 consecutive losses
+symbol_streak_anchor = {}   # {symbol: str} — horodatage de la dernière clôture
+                            # ayant DÉJÀ déclenché une pause. Empêche le
+                            # ré-armement en boucle (cf. check_symbol_loss_streaks).
 direction_blocked    = {}   # {f"{symbol}_{direction}": datetime expiry} — 2h block after 2 consecutive same-direction losses
 direction_breaker    = {}   # {"buy"/"sell": datetime} — GLOBAL directional circuit breaker (all symbols)
 btc_lead_signal      = {}   # {"bias": "sell"/"buy", "ts": datetime} — BTC lead-lag tracker
@@ -511,12 +658,15 @@ def check_symbol_loss_streaks():
 
         for symbol in scalp_state["settings"].get("enabled_symbols", []):
             c.execute(
-                "SELECT outcome FROM scalp_log WHERE symbol=? AND outcome IS NOT NULL "
+                "SELECT outcome, COALESCE(closed_at, timestamp) AS t FROM scalp_log "
+                "WHERE symbol=? AND outcome IS NOT NULL "
                 "AND timestamp >= ? "
                 "ORDER BY COALESCE(closed_at, timestamp) DESC LIMIT 2",
                 (symbol, session_start)
             )
-            recent_closed  = [r[0] for r in c.fetchall()]
+            _recent        = c.fetchall()
+            recent_closed  = [r[0] for r in _recent]
+            newest_close   = _recent[0][1] if _recent else None
             closed_streak  = len(recent_closed) >= 2 and all(o == 0 for o in recent_closed)
 
             # Currently open + underwater positions count too — catches a
@@ -531,9 +681,38 @@ def check_symbol_loss_streaks():
 
             if closed_streak or open_streak or mixed_streak:
                 now = datetime.now()
+
+                # ── Anti-deadlock — 2026-08-20 ──────────────────────────────
+                # La pause "1h" se ré-armait INDÉFINIMENT. À l'expiration, ce
+                # check relisait LES MÊMES deux pertes : un symbole en pause ne
+                # peut produire aucun résultat neuf, donc la condition restait
+                # vraie et la pause repartait pour 1h. En boucle.
+                #
+                # Constaté en live le 2026-08-19/20 : BTC, XAUUSD et XAGUSD
+                # bloqués ~2 jours d'affilée sur une règle censée durer 1h,
+                # et totalement invisibles — le skip du scan (plus bas) est
+                # silencieux, donc zéro ligne dans rejection_log. 3 des 5
+                # symboles avaient disparu sans que rien ne le signale.
+                #
+                # /scalping/unpause/{symbol} n'y pouvait rien non plus :
+                # supprimer la clé rendait `symbol not in symbol_paused_until`
+                # vrai, donc re-pause au scan suivant. Seul un redémarrage de
+                # session débloquait (il déplace session_start, ce qui sort les
+                # vieilles pertes de la fenêtre).
+                #
+                # Règle : on n'arme une NOUVELLE pause que si un NOUVEAU trade
+                # clôturé est apparu depuis celle d'avant. Exception si une
+                # position est encore ouverte et perdante — là, la condition
+                # est vivante et non un écho du passé, on garde l'ancien
+                # comportement.
+                if (not underwater and newest_close is not None
+                        and symbol_streak_anchor.get(symbol) == newest_close):
+                    continue
+
                 if symbol not in symbol_paused_until or now >= symbol_paused_until[symbol]:
                     resume_at = now + timedelta(hours=1)
                     symbol_paused_until[symbol] = resume_at
+                    symbol_streak_anchor[symbol] = newest_close
                     if closed_streak:
                         reason = "2 consecutive closed losses"
                     elif open_streak:
@@ -578,7 +757,8 @@ def _asset_class(symbol: str) -> str:
     return "forex"
 
 
-def update_direction_breaker(consec: int = 2, block_hours: int = 4):
+def update_direction_breaker(consec: int = 2, block_hours: int = 4,
+                             global_consec: int = 2, global_block_hours: int = 3):
     """PER-ASSET-CLASS directional circuit breaker (the real 4H-lag fix).
 
     For each asset class (crypto / metals / forex) independently: if the most
@@ -636,6 +816,50 @@ def update_direction_breaker(consec: int = 2, block_hours: int = 4):
                 rem = int((until - now).total_seconds() // 60)
                 print(f"[DIR-BREAKER] {cls} {streak_dir.upper()} blocked {rem}min "
                       f"({consec}+ consecutive {cls} {streak_dir} SL losses)")
+
+    # ── Breaker GLOBAL, toutes classes confondues (2026-08-03) ──────────────
+    # Le breaker par classe ne voit pas un retournement de marché ENTIER. Le
+    # 08-03 : 4 pertes SELL consécutives réparties métaux(1) / crypto(2) /
+    # forex(1). Chaque classe restait à son seuil ou en dessous, donc rien n'a
+    # bloqué, et la journée a rendu 31.66$ d'un pic à +35.41$.
+    #
+    # Rejoué en file d'événements (ouvertures et clôtures dans le vrai ordre
+    # chronologique, pour qu'un trade bloqué ne nourrisse pas la série
+    # suivante) sur 131 trades depuis le 07-20 :
+    #   consec=2 block=3h : -281.32$ -> -200.86$  (+80.46$)
+    #   consec=3 block=3h : -281.32$ -> -230.60$  (+50.72$)
+    #   consec=4 block=3h : -281.32$ -> -272.60$   (+8.72$)
+    # Jour par jour à consec=2/3h : 8 jours meilleurs, 1 pire (-2.17$), 5
+    # inchangés — c'est la régularité, pas l'ampleur, qui valide le réglage.
+    #
+    # La version GLOBALE existait à l'origine (validée 07-20→22 : -29.86$ ->
+    # +13.74$) avant d'être restreinte par classe le 07-23. On garde les deux :
+    # par classe pour un mouvement corrélé dans un marché, global pour un
+    # retournement de régime qui traverse tous les marchés.
+    g_dir, g_streak, g_ct = None, 0, None
+    for symbol, action, outcome, profit, ct in rows:          # most-recent first
+        is_loss = outcome == 0 and abs(profit or 0) >= 0.15
+        is_win  = outcome == 1 and (profit or 0) > 0.15
+        if not is_loss and not is_win:
+            continue
+        if is_win:
+            break
+        if g_dir is None:
+            g_dir, g_streak, g_ct = action, 1, ct
+        elif action == g_dir:
+            g_streak += 1
+        else:
+            break
+    if g_streak >= global_consec and g_ct:
+        try:
+            until = datetime.fromisoformat(g_ct) + timedelta(hours=global_block_hours)
+        except Exception:
+            until = now + timedelta(hours=global_block_hours)
+        if until > now:
+            direction_breaker[("global", g_dir)] = until
+            rem = int((until - now).total_seconds() // 60)
+            print(f"[DIR-BREAKER] GLOBAL {g_dir.upper()} blocked {rem}min "
+                  f"({global_consec}+ consecutive {g_dir} SL losses across ALL markets)")
 
 
 def _update_direction_locks():
@@ -911,6 +1135,19 @@ def manage_open_positions():
     _mt5_init()
     from features.trading.risk_manager import BOT_MAGIC
 
+    # ── Purge des ordres en attente périmés ───────────────────────────────
+    # DOIT rester AVANT le early-return "pas de position" : un ordre en
+    # attente n'est PAS une position, donc sans cela le nettoyage ne
+    # tournerait jamais dans le cas le plus fréquent (rien d'ouvert, un
+    # limit qui traîne). C'est précisément la situation où un GTC oublié
+    # bloque un symbole pour rien.
+    try:
+        _max_age = scalp_state["settings"].get("pending_max_age_minutes", 120)
+        if _max_age and _max_age > 0:
+            cancel_stale_pending_orders(_max_age)
+    except Exception as _pce:
+        print(f"[PENDING/CANCEL] error: {_pce}")
+
     positions = mt5.positions_get()
     if not positions:
         if _excursion_cache:
@@ -949,8 +1186,71 @@ def manage_open_positions():
         new_sl = sl
         action = None
 
-        # ── 70% → trail tightly, let TP fire naturally ────────────────────
-        if progress >= 0.70:
+        # ── Trail — déclenchement à 40% du chemin vers le TP (2026-08-01) ──
+        # Était 70%. Balayé sur 23 645 signaux rejoués barre par barre, avec
+        # séparation train (< 2026-05-01) / test (>= 2026-05-01) :
+        #
+        #   départ trail   avg R (tout)   train      test
+        #        30%         +0.2046     +0.1937   +0.2201
+        #        40%         +0.2075     +0.1925   +0.2289   <-- retenu
+        #        50%         +0.2024     +0.1882   +0.2227
+        #        70%         +0.1669     +0.1599   +0.1768   (ancien réglage)
+        #
+        # 40% est optimal sur l'ensemble ET sur le test hors échantillon, et le
+        # plateau 30-50% est plat — signe d'un effet réel, pas d'un surajustement.
+        # Gain +0.041R par trade (+24% d'espérance).
+        #
+        # Effet de bord : avec TP à 2.5R, 40% du chemin = 1.0R. Le trail
+        # s'active donc AVANT le breakeven à 1.5R et le rend inopérant — ce
+        # n'est pas une perte, c'est mieux : à 1.0R le trail verrouille déjà
+        # ~+0.875R au lieu de 0. Le bloc BE reste en place pour les cas où le
+        # trail est désactivé ou le TP configuré différemment.
+        # ── Déclenchement exprimé en R, pas en % du TP (2026-08-10) ────────
+        # CORRECTION d'une erreur d'implémentation. L'étude de sortie qui a
+        # produit le "40%" tournait sur un bracket FIXE à 2.5R : à RR 2.5,
+        # 40% du TP EST 1.0R. Les deux formulations sont numériquement
+        # identiques dans ce jeu de données, il ne pouvait pas les
+        # départager — et j'ai retenu la mauvaise.
+        #
+        # Le système d'entrées limites produit maintenant des RR de 6 à 25.
+        # À RR 10, "40% du TP" = 4.1R : le trail ne s'arme quasiment jamais,
+        # et le BE à 1.5R non plus. Le 08-10 deux trades en attente ont
+        # atteint +0.72R et +1.01R sans AUCUNE protection active, puis se
+        # sont retournés jusqu'au stop plein.
+        #
+        # Mesuré (15 515 entrées limites rejouées, RR ~9.5) :
+        #   40% du TP : +0.2427R / trade,  15.2% de gagnants
+        #   1.0R      : +0.7150R / trade,  64.1% de gagnants   -> +0.47R
+        #   gain par symbole : BTC +0.479  ETH +0.449  XAG +0.486  XAU +0.496
+        #
+        # Contrôle sur les entrées AU MARCHÉ (21 703 trades, RR 2.5) :
+        #   40% du TP : +0.2182R      1.0R : +0.2182R
+        #   100.0% de résultats IDENTIQUES — à RR 2.5 c'est la même règle.
+        # Le changement est donc sans effet sur l'existant et ne gagne que
+        # là où le RR est élevé.
+        #
+        # trail_start_pct reste lu pour compatibilité : s'il est encore
+        # présent dans des settings sauvegardés, il est converti en R
+        # (0.40 -> 1.0R au RR 2.5 de référence) plutôt qu'ignoré.
+        _cfg = scalp_state["settings"]
+        _trail_r = _cfg.get("trail_start_r")
+        if _trail_r is None:
+            _trail_r = _cfg.get("trail_start_pct", 0.40) * 2.5
+
+        # Le risque ORIGINAL, pas (entry - sl) courant : dès que le trail ou
+        # le BE a déplacé le stop, cette différence devient nulle ou négative
+        # et la règle en R se désarmerait toute seule au tick suivant.
+        # _excursion_cache conserve le risque d'origine (renseigné juste
+        # au-dessus par _track_excursion, depuis trade_signals ou le SL initial).
+        _ex = _excursion_cache.get(ticket)
+        _risk0 = _ex["risk"] if _ex else ((entry - sl) if is_buy else (sl - entry))
+        if _risk0 > 0:
+            _armed = moved >= _risk0 * _trail_r
+        else:
+            # risque d'origine inconnu (pas de ligne DB et stop déjà bougé) :
+            # on retombe sur l'ancienne référence en % du TP.
+            _armed = progress >= _cfg.get("trail_start_pct", 0.40)
+        if _armed:
             # Buffer scales with current profit so big moves (800+ pts on BTC)
             # aren't stopped out by tiny 5-pt noise. 10% of unrealized profit
             # beats 5% of original TP once the trade runs far past TP.
@@ -966,14 +1266,19 @@ def manage_open_positions():
                     new_sl = candidate
                     action = "trail"
 
-        # ── 1.5R profit → breakeven — zero loss, full upside still open ───
-        # risk > 0 also means SL is still on the loss side (original SL);
-        # after the BE move risk becomes 0 and this block never re-fires.
-        # Trigger 1.5R (was 1.0R) — exit study 2026-07-23: at 1.0R the BE
-        # scratched pullback-continue winners; 1.5R lets them breathe first.
+        # ── Breakeven — filet avant que le trail ne s'active ───────────────
+        # risk > 0 signifie que le SL est encore du côté perte (SL d'origine) ;
+        # après le passage à BE, risk devient 0 et ce bloc ne re-déclenche plus.
+        #
+        # Le rejeu barre par barre (2026-08-01, 23 645 signaux) a INFIRMÉ le
+        # soupçon que le BE coûtait de l'argent : retirer l'étape BE ne vaut
+        # que -0.0027R par trade, du bruit. Il ne scratche que 6% des trades et
+        # cette protection compense. On le garde. Avec trail_start_pct=0.40 il
+        # ne se déclenche de toute façon presque jamais (le trail arrive avant).
         else:
             risk = (entry - sl) if is_buy else (sl - entry)
-            if risk > 0 and moved >= risk * 1.5:
+            _be_r = scalp_state["settings"].get("be_trigger_r", 1.5)
+            if risk > 0 and _be_r > 0 and moved >= risk * _be_r:
                 new_sl = entry
                 action = "breakeven"
 
@@ -1134,6 +1439,12 @@ def _scalp_auto_scan_inner():
 
     for symbol in settings["enabled_symbols"]:
 
+        # ── Blocklist code (voir BLOCKED_SYMBOLS) ────────────────────────
+        # Placé en tête de boucle : aucun fetch, aucune analyse, aucun ordre
+        # pour ces symboles même si l'app les renvoie dans enabled_symbols.
+        if symbol.upper() in BLOCKED_SYMBOLS:
+            continue   # silencieux — sinon une ligne par symbole par scan
+
         # ── Filtre session : évite les marchés fermés / spreads larges ──────
         if not is_trading_session(symbol):
             continue   # silencieux — trop fréquent pour logger
@@ -1169,57 +1480,51 @@ def _scalp_auto_scan_inner():
             news_block = {"blocked": False}
             print(f"[NEWS] calendar error: {_ne}")
 
-        # ── Max 2 positions par symbole ───────────────────────────────────────
+        # ── Max 1 position par symbole ────────────────────────────────────────
+        # Le plafond était fixé à 2 ici, avec une logique "2e trade autorisé si
+        # même sens + meilleur prix" plus bas. Cette logique était MORTE :
+        # place_trade() et place_pending_trade() rejettent inconditionnellement
+        # toute position déjà ouverte sur le symbole ("max 1 par symbole",
+        # décision post-mortem sur 4 paires d'averaging perdantes). Le router
+        # analysait donc entièrement un symbole déjà en position pour finir sur
+        # un place_trade_failed. On skippe maintenant tout de suite : même
+        # comportement, une passe d'analyse complète économisée par symbole.
         sym_positions = [p for p in _all_open
                          if p.magic == BOT_MAGIC and symbol.upper() in p.symbol.upper()]
-        if len(sym_positions) >= 2:
-            print(f"[!]  {symbol} 2/2 positions ouvertes → skip")
-            _log_rejection(symbol, "max_positions 2/2")
+        if sym_positions:
+            print(f"[!]  {symbol} position déjà ouverte → skip")
+            _log_rejection(symbol, "max_positions 1/1")
             continue
-        # 2nd trade allowed only if: same bias + better price + cooldown already respected above
-        _second_trade_check = None
-        if len(sym_positions) == 1:
-            _existing = sym_positions[0]
-            _second_trade_check = {
-                "action":      "buy" if _existing.type == 0 else "sell",
-                "entry_price": _existing.price_open,
-            }
 
-        # ── Filtre MTF — tendance Higher Timeframe (1H default) ─────────
+        # ── Consensus MTF — OBSERVATION SEULE depuis 2026-08-01 ──────────
+        # Ce gate ("Gate A") calculait un consensus 5m+1h AU NIVEAU DU SYMBOLE
+        # puis l'appliquait à TOUS les timeframes de trading. Conséquence : un
+        # trade 15m ou 30m pouvait être bloqué par le graphique 5 MINUTES,
+        # c'est-à-dire par une unité de temps INFÉRIEURE à celle de l'entrée —
+        # l'inverse d'un filtre top-down.
+        #
+        # Le filtre de tendance officiel est désormais le seul à décider (voir
+        # "HTF trend filter PER TRADING TIMEFRAME" plus bas) :
+        #     M5  -> H1     M15 -> H4     M30 -> H4
+        #
+        # consensus reste CALCULÉ mais ne bloque plus rien : c'est une FEATURE
+        # du modèle ML (predict_decision) et une colonne de trade_signals
+        # (htf_consensus). Cesser de la calculer changerait le vecteur d'entrée
+        # du modèle et rendrait ses prédictions incohérentes avec son
+        # entraînement.
+        #
+        # Supprimé avec ce gate : l'arbitrage "1H master" (côté 5m 19.3% WR vs
+        # côté 1H 36.1% WR sur les conflits). Choix utilisateur assumé
+        # 2026-08-01 — à surveiller sur les prochains trades en conflit.
         htf_tf   = settings.get("htf_timeframe", ["1h"])
         htf_data = get_htf_trend(symbol, htf_tf)
         consensus = htf_data["consensus"]
+        if consensus == "conflict":
+            print(f"[HTF] {symbol} consensus conflict {htf_data['trends']} "
+                  f"— observation seule, le filtre par timeframe décide")
 
         # 50/200 EMA confluence across 5m+30m+1h — bonus signal only.
         ema_confluence = get_ema_confluence(symbol)
-
-        # Conflit entre HTFs → 1H maître SEULEMENT si la LTF est neutre (pas de
-        # structure confirmée opposée). Si la LTF a un BOS/CHoCH confirmé contre
-        # 1H, c'est un vrai signal de retournement — pas un pullback — on skip.
-        ltf_label = next((t for t in htf_tf if t != "1h"), htf_tf[0])
-        htf_blocked_for_lg = False
-        h1_master_dir      = None   # conflit confirmé mais 1H directionnel → entrées côté 1H uniquement
-        if consensus == "conflict":
-            h1_trend  = htf_data["trends"].get("1h", "neutral")
-            ltf_trend = htf_data["trends"].get(ltf_label, "neutral")
-            if ltf_trend == "neutral" and h1_trend in ("bullish", "bearish"):
-                consensus = h1_trend   # LTF calme, 1H tranche → pullback entry
-                print(f"[HTF] {symbol} {ltf_label} neutral → 1H={h1_trend} master (pullback entry)")
-            elif h1_trend in ("bullish", "bearish"):
-                # Étude contrefactuelle des 86 épisodes bloqués (11→13/07,
-                # bracket ATR RR2.5) : suivre le côté 5m = 19.3% WR (-0.33R)
-                # → reste bloqué ; suivre le côté 1H = 36.1% WR (+0.27R)
-                # → autorisé. Le 5m qui monte contre un 1H baissier est un
-                # pullback à vendre, pas un retournement à suivre. Les autres
-                # gates (P/D, momentum, macro-4H, zones, ML, blended) filtrent.
-                h1_master_dir = h1_trend
-                print(f"[HTF] {symbol} conflict {htf_data['trends']} → 1H master: "
-                      f"{'buy' if h1_trend == 'bullish' else 'sell'} entries only")
-            else:
-                print(f"[!] HTF conflict {symbol}: {htf_data['trends']} → LG-primary skipped "
-                      f"(pas de direction 1H pour arbitrer)")
-                _log_rejection(symbol, f"htf_conflict_confirmed {htf_data['trends']}")
-                htf_blocked_for_lg = True
 
         # OBV bias — computed once per symbol, reused inside the tf loop below.
         # Rising OBV = institutional buying = bullish. Declining = bearish.
@@ -1264,33 +1569,189 @@ def _scalp_auto_scan_inner():
                   f"{regime_info['recent_conflicts']} recent HTF conflicts) — "
                   f"raising LG score bar, disabling M1 fallback (S/R still active)")
 
+        # ── Helper commun aux stratégies de repli ──────────────────────
+        # Défini au niveau SYMBOLE (et non plus dans la branche 'score
+        # insuffisant') pour que la passe price-action qui suit la boucle
+        # timeframe puisse l'utiliser. `tf` est devenu un paramètre : il
+        # était capturé depuis la variable de boucle, ce qui aurait donné
+        # la dernière valeur une fois appelé hors de la boucle.
+        def _try_fallback(sig: dict, signal_type: str, tag: str, tf: str) -> bool:
+            if not sig.get("detected"):
+                return False
+            fb_action = sig["action"]
+
+            # ── Filtre de tendance par timeframe (même règle que LG) ──
+            # Remplace l'ancien gate consensus 5m+1h (Gate A), retiré
+            # le 2026-08-01. Les fallbacks utilisent désormais la même
+            # table que la voie principale : M5->H1, M15/M30->H4.
+            #
+            # EXEMPTION price_action (2026-08-03) : la stratégie qualifie
+            # DÉJÀ sa direction sur H4, via htf_trend() qui lit la STRUCTURE
+            # (HH/HL vs LH/LL). Ce filtre-ci lit la pente de l'EMA20. Les
+            # deux définitions divergeaient sur 4 symboles sur 6 en live :
+            # PA validait un setup sur sa lecture H4, ce gate le tuait sur
+            # l'autre. 41 setups perdus en 11h de cette seule contradiction.
+            # Le backtest (+0.147R hors échantillon) mesurait PA avec son
+            # propre filtre et AUCUN de ces deux gates — les ajouter fait
+            # tourner autre chose que ce qui a été mesuré.
+            if signal_type != "price_action":
+                _fb_filter_tf    = "1h" if tf in ("5m", "1m", "3m") else "4h"
+                _fb_filter_trend = _ema_1h if _fb_filter_tf == "1h" else _ema_4h
+                _fb_need = "bullish" if fb_action == "buy" else "bearish"
+                if _fb_filter_trend != _fb_need:
+                    print(f"[{tag}-HTF] {symbol}: {fb_action} bloqué — "
+                          f"{_fb_filter_tf} trend={_fb_filter_trend}, besoin {_fb_need}")
+                    _log_rejection(symbol,
+                                   f"{signal_type}_htf_filter_{tf}_vs_{_fb_filter_tf}={_fb_filter_trend}")
+                    return False
+
+            # ── OBV counter-trend block — RETIRÉ le 2026-08-03 ────────
+            # Ce gate avait déjà été supprimé de la voie LG-primary le
+            # 2026-07-14 : sur 24 épisodes bloqués il affichait 54.2% WR /
+            # +0.90R, autrement dit il bloquait les trades LES PLUS
+            # rentables de tous les gates testés. Il était pourtant resté
+            # actif ici, où il a tué 27 setups price-action en 11h — une
+            # incohérence, pas une décision. Même raisonnement que
+            # ci-dessus : il ne faisait pas partie du backtest PA.
+            # (obv_bias reste calculé et loggé au niveau symbole.)
+
+            # ── Direction lock ────────────────────────────────────────
+            _fb_dir_key = f"{symbol}_{fb_action}"
+            if _fb_dir_key in direction_blocked and datetime.now() < direction_blocked[_fb_dir_key]:
+                _fb_rem = int((direction_blocked[_fb_dir_key] - datetime.now()).total_seconds() // 60)
+                print(f"[{tag}-DIR-LOCK] {symbol}: {fb_action} direction locked {_fb_rem}min")
+                return False
+
+            # SL width gate (same as LG-primary)
+            _fb_sl_w = abs(sig["entry"] - sig["sl"])
+            _fb_atr  = sig.get("atr", 0)
+            if _fb_atr > 0 and _fb_sl_w > 2.5 * _fb_atr:
+                print(f"[{tag}] {symbol}: SL {_fb_sl_w:.3f} > 2.5×ATR({_fb_atr:.3f}) — skipped")
+                _log_rejection(symbol, f"{signal_type}_sl_too_wide: {round(_fb_sl_w,3)}")
+                return False
+
+            # (le contrôle "2e trade même sens / meilleur prix" a été
+            # retiré ici : un symbole déjà en position est skippé
+            # plus haut, donc ce cas ne peut plus se présenter)
+
+            lot_sizes  = settings.get("lot_sizes", {})
+            fixed_lot  = float(lot_sizes.get(symbol, 0))
+            confidence = min(0.5 + abs(sig.get("momentum", 0.5)) / 10
+                              + sig.get("pd_bonus", 0.0)
+                              + sig.get("m5_bonus", 0.0), 0.9)
+
+            print(f"[{tag}] {symbol} {fb_action} @ {sig['entry']} → standalone entry "
+                  f"({sig['description']})")
+
+            # ── Entrée optimale / plafond de risque (2026-08-12) ──────────
+            # Cette voie appelait place_trade() directement, sans jamais
+            # passer par compute_risk_based_entry() — réservé jusqu'ici à
+            # LG-primary. C'est par là qu'est passé le XAUUSD price_action
+            # du 08-12 : 0.01 lot, stop 16.12 points, -16.24$ soit 19.7%
+            # du solde, alors que le réglage annonçait 5%.
+            #
+            # Même traitement que LG-primary :
+            #   ACHAT  -> on cherche une entrée limite plus proche du SL qui
+            #             ramène le risque au pourcentage visé
+            #   VENTE  -> pas de limite (les ventes en attente sont 0 gain
+            #             sur 9 en live) ; si le risque dépasse le plafond,
+            #             place_trade() refusera de lui-même
+            _fb_pending = False
+            if fb_action == "buy" and fixed_lot > 0 and settings.get("pending_entry_enabled"):
+                try:
+                    _fb_atr = sig.get("atr") or 0
+                    _fb_rbe = compute_risk_based_entry(
+                        symbol=          SYMBOL_MAP.get(symbol.upper(), symbol),
+                        action=          fb_action,
+                        sl=              sig["sl"],
+                        market_price=    sig["entry"],
+                        fixed_lot=       fixed_lot,
+                        target_risk_pct= settings.get("target_risk_pct", 5.0),
+                        min_buffer_price=1.0 * _fb_atr,   # 0.3→1.0 le 2026-08-20,
+                                                          # même raison qu'en LG-primary
+                                                          # (stops sous 1xATR = -0.58R)
+                    )
+                    print(f"[{tag}-RISK] {symbol}: {_fb_rbe['mode']} — {_fb_rbe['reason']}")
+                    if _fb_rbe["mode"] == "reject":
+                        _log_rejection(symbol, f"{signal_type}_risk_reject: {_fb_rbe['reason']}",
+                                       timeframe=tf, signal_type=signal_type)
+                        return False
+                    if _fb_rbe["mode"] == "pending":
+                        fb_trade = place_pending_trade(
+                            symbol=         symbol,
+                            action=         fb_action,
+                            entry_price=    _fb_rbe["entry_price"],
+                            sl=             sig["sl"],
+                            tp1=            sig["tp1"],
+                            confidence=     confidence,
+                            fixed_lot=      fixed_lot,
+                            expire_minutes= settings.get("pending_expire_minutes", 0),
+                        )
+                        _fb_pending = True
+                except Exception as _rbe_e:
+                    print(f"[{tag}-RISK] {symbol}: error — {_rbe_e}")
+
+            if not _fb_pending:
+                fb_trade = place_trade(
+                    symbol=       symbol,
+                    action=       fb_action,
+                    entry=        sig["entry"],
+                    sl=           sig["sl"],
+                    tp1=          sig["tp1"],
+                    confidence=   confidence,
+                    risk_percent= settings["risk_percent"],
+                    max_trades=   settings["max_trades"],
+                    fixed_lot=    fixed_lot,
+                )
+
+            if not fb_trade.get("success"):
+                print(f"[{tag}] {symbol}: place_trade failed — {fb_trade.get('reason')}")
+                _log_rejection(symbol, f"{signal_type}_place_trade_failed: {fb_trade.get('reason')}")
+                return False
+
+            cooldown_min = settings.get("cooldown_minutes", 8)
+            scalp_cooldowns[symbol] = now + timedelta(minutes=cooldown_min)
+            scalp_state["trades_today"] += 1
+            print(f"[!] {tag}: {symbol} {fb_action} ticket={fb_trade.get('ticket')}")
+
+            fb_entry = {
+                "timestamp":     now.isoformat(),
+                "symbol":        symbol,
+                "timeframe":     tf,
+                "action":        fb_action,
+                "signal_type":   signal_type,
+                "score":         None,
+                "blended_score": None,
+                "entry":         sig["entry"],
+                "sl":            sig["sl"],
+                "tp1":           sig["tp1"],
+                "rr":            sig["rr_ratio"],
+                "conditions":    [sig["description"]],
+                "result":        fb_trade,
+            }
+            scalp_history.append(fb_entry)
+            try:
+                from features.trading.data_collector import save_scalp_log
+                save_scalp_log(fb_entry)
+            except Exception as _sle:
+                print(f"[SCALP-LOG] persist error: {_sle}")
+            return True
+
+        # ── Fallbacks S/R + M1 — voir SR_FALLBACK_ENABLED / M1_FALLBACK_ENABLED
+        # Quand une stratégie est désactivée on ne journalise PLUS
+        # sa non-détection : c'était 765 719 lignes sur 1 320 692
+        # (58% de la base) dont le contenu se résumait à « S/R n'a
+        # pas tiré parce que S/R est désactivé ». Zéro valeur pour
+        # l'entraînement (la raison est une constante, pas un état
+        # de marché) et ~40 000 écritures fsync par jour.
+
         for tf in settings["enabled_timeframes"]:
             try:
                 df       = fetch_candles(symbol, tf, limit=100)
                 analysis = run_scalping_analysis(df, symbol, macro_trend=_macro4h)
 
-                if htf_blocked_for_lg:
-                    # Hard block — conflit sans direction 1H pour arbitrer.
-                    analysis["scalping_score"] = 0
-                    analysis["should_scalp"]   = False
-                    analysis["conditions"]     = (
-                        [f"HTF conflict hard block ({htf_data['trends']}) — "
-                         f"no 1H direction to arbitrate"]
-                    )
-                    print(f"[HTF-BLOCK] {symbol} {tf}: conflict {htf_data['trends']} → LG-primary blocked")
-                elif h1_master_dir and analysis.get("should_scalp"):
-                    # Conflit avec 1H directionnel : seul le côté 1H peut trader.
-                    # (étude : côté 5m 19.3% WR → bloqué ; côté 1H 36.1% WR → OK)
-                    _need = "buy" if h1_master_dir == "bullish" else "sell"
-                    _sig  = analysis.get("bias")
-                    if _sig and _sig != _need:
-                        analysis["scalping_score"] = 0
-                        analysis["should_scalp"]   = False
-                        analysis["conditions"]     = (
-                            [f"HTF conflict: signal {_sig} vs 1H {h1_master_dir} "
-                             f"— only {_need} allowed (1H master)"]
-                        )
-                        print(f"[HTF-1H] {symbol} {tf}: {_sig} blocked — 1H master allows {_need} only")
+                # (blocs "HTF conflict hard block" et "1H master" retirés —
+                #  Gate A ne bloque plus, cf. le commentaire au niveau symbole)
 
                 # ── XAUUSD specific rules ─────────────────────────────────
                 # Gold needs stronger trend confirmation and no approaching zones
@@ -1333,189 +1794,6 @@ def _scalp_auto_scan_inner():
                     # These are opposite-regime tools on purpose: S/R wins
                     # when momentum would chase a reversal, M1 wins when
                     # there's a real trend with no LG pattern to catch it.
-                    def _try_fallback(sig: dict, signal_type: str, tag: str) -> bool:
-                        if not sig.get("detected"):
-                            return False
-                        fb_action = sig["action"]
-
-                        # ── HTF consensus gate ────────────────────────────────────
-                        # LG-primary already rejects contra-HTF trades (lines above).
-                        # Fallback had NO such check — it could still sell in a
-                        # bullish 1h environment via S/R or M1. Fixed here.
-                        if (consensus in ("bullish", "strong_bullish") and fb_action == "sell") or \
-                           (consensus in ("bearish", "strong_bearish") and fb_action == "buy"):
-                            print(f"[{tag}-HTF] {symbol}: {fb_action} fallback blocked — HTF {consensus}")
-                            _log_rejection(symbol, f"{signal_type}_htf_block_{consensus}")
-                            return False
-                        # Even in conflict, the 1h is the master trend — don't
-                        # trade against it via fallback (S/R/M1 are for range, not reversal)
-                        if consensus == "conflict":
-                            h1_dir = htf_data["trends"].get("1h", "neutral")
-                            if (h1_dir == "bullish" and fb_action == "sell") or \
-                               (h1_dir == "bearish" and fb_action == "buy"):
-                                print(f"[{tag}-HTF] {symbol}: {fb_action} fallback blocked — 1H={h1_dir} (conflict)")
-                                _log_rejection(symbol, f"{signal_type}_1h_block_{h1_dir}")
-                                return False
-
-                        # ── OBV counter-trend block (fallback) ───────────────────
-                        if obv_bias == "bearish" and fb_action == "buy":
-                            print(f"[{tag}-OBV] {symbol}: buy fallback blocked — declining OBV")
-                            _log_rejection(symbol, f"{signal_type}_obv_contra_buy")
-                            return False
-                        if obv_bias == "bullish" and fb_action == "sell":
-                            print(f"[{tag}-OBV] {symbol}: sell fallback blocked — rising OBV")
-                            _log_rejection(symbol, f"{signal_type}_obv_contra_sell")
-                            return False
-
-                        # ── Direction lock ────────────────────────────────────────
-                        _fb_dir_key = f"{symbol}_{fb_action}"
-                        if _fb_dir_key in direction_blocked and datetime.now() < direction_blocked[_fb_dir_key]:
-                            _fb_rem = int((direction_blocked[_fb_dir_key] - datetime.now()).total_seconds() // 60)
-                            print(f"[{tag}-DIR-LOCK] {symbol}: {fb_action} direction locked {_fb_rem}min")
-                            return False
-
-                        # SL width gate (same as LG-primary)
-                        _fb_sl_w = abs(sig["entry"] - sig["sl"])
-                        _fb_atr  = sig.get("atr", 0)
-                        if _fb_atr > 0 and _fb_sl_w > 2.5 * _fb_atr:
-                            print(f"[{tag}] {symbol}: SL {_fb_sl_w:.3f} > 2.5×ATR({_fb_atr:.3f}) — skipped")
-                            _log_rejection(symbol, f"{signal_type}_sl_too_wide: {round(_fb_sl_w,3)}")
-                            return False
-
-                        if _second_trade_check:
-                            _chk_action = _second_trade_check["action"]
-                            _chk_price  = _second_trade_check["entry_price"]
-                            if fb_action != _chk_action:
-                                print(f"[{tag}] {symbol}: {fb_action} != open {_chk_action} → skip")
-                                return False
-                            if (fb_action == "buy"  and sig["entry"] >= _chk_price) or \
-                               (fb_action == "sell" and sig["entry"] <= _chk_price):
-                                print(f"[{tag}] {symbol}: {fb_action} @ {sig['entry']} "
-                                      f"not better than existing {_chk_price} → skip")
-                                return False
-
-                        lot_sizes  = settings.get("lot_sizes", {})
-                        fixed_lot  = float(lot_sizes.get(symbol, 0))
-                        confidence = min(0.5 + abs(sig.get("momentum", 0.5)) / 10
-                                          + sig.get("pd_bonus", 0.0)
-                                          + sig.get("m5_bonus", 0.0), 0.9)
-
-                        print(f"[{tag}] {symbol} {fb_action} @ {sig['entry']} → standalone entry "
-                              f"({sig['description']})")
-
-                        fb_trade = place_trade(
-                            symbol=       symbol,
-                            action=       fb_action,
-                            entry=        sig["entry"],
-                            sl=           sig["sl"],
-                            tp1=          sig["tp1"],
-                            confidence=   confidence,
-                            risk_percent= settings["risk_percent"],
-                            max_trades=   settings["max_trades"],
-                            fixed_lot=    fixed_lot,
-                        )
-
-                        if not fb_trade.get("success"):
-                            print(f"[{tag}] {symbol}: place_trade failed — {fb_trade.get('reason')}")
-                            _log_rejection(symbol, f"{signal_type}_place_trade_failed: {fb_trade.get('reason')}")
-                            return False
-
-                        cooldown_min = settings.get("cooldown_minutes", 8)
-                        scalp_cooldowns[symbol] = now + timedelta(minutes=cooldown_min)
-                        scalp_state["trades_today"] += 1
-                        print(f"[!] {tag}: {symbol} {fb_action} ticket={fb_trade.get('ticket')}")
-
-                        fb_entry = {
-                            "timestamp":     now.isoformat(),
-                            "symbol":        symbol,
-                            "timeframe":     tf,
-                            "action":        fb_action,
-                            "signal_type":   signal_type,
-                            "score":         None,
-                            "blended_score": None,
-                            "entry":         sig["entry"],
-                            "sl":            sig["sl"],
-                            "tp1":           sig["tp1"],
-                            "rr":            sig["rr_ratio"],
-                            "conditions":    [sig["description"]],
-                            "result":        fb_trade,
-                        }
-                        scalp_history.append(fb_entry)
-                        try:
-                            from features.trading.data_collector import save_scalp_log
-                            save_scalp_log(fb_entry)
-                        except Exception as _sle:
-                            print(f"[SCALP-LOG] persist error: {_sle}")
-                        return True
-
-                    if is_choppy:
-                        # S/R is a RANGE tool — exactly right for choppy.
-                        # M1 is a trend tool — disabled here (false signals in ranging markets).
-                        _sr_allowed_c = False  # S/R disabled globally: 31% WR, -$51 over 200 trades
-                        if not _fallback_traded and _sr_allowed_c:
-                            try:
-                                from features.momentum.sr_signal import get_support_resistance_signal
-                                sr_sig_c = get_support_resistance_signal(symbol)
-                            except Exception as _srce:
-                                sr_sig_c = {"detected": False, "reason": f"error: {_srce}"}
-                                print(f"[SR-SIGNAL] {symbol}: error — {_srce}")
-                            if _try_fallback(sr_sig_c, "support_resistance", "SR-SIGNAL"):
-                                _fallback_traded = True
-                            else:
-                                _log_rejection(symbol, f"sr_no_signal: {sr_sig_c.get('reason', '?')}",
-                                               timeframe=tf, signal_type="support_resistance",
-                                               detail={k: v for k, v in sr_sig_c.items() if k != "detected"})
-                        if not _fallback_traded:
-                            _log_rejection(symbol, "regime_choppy_m1_skipped",
-                                           timeframe=tf, detail=regime_info)
-                    elif not _fallback_traded:
-                        # S/R is a range strategy — don't use it on BTC (trending
-                        # asset: 19 trades, 37% WR, -$10.50 net historically).
-                        # ETH S/R works (72% WR, +$4.23) because ETH ranges more.
-                        _sr_allowed = False  # S/R disabled globally: 31% WR, -$51 over 200 trades
-                        if _sr_allowed:
-                            try:
-                                from features.momentum.sr_signal import get_support_resistance_signal
-                                sr_sig = get_support_resistance_signal(symbol)
-                            except Exception as _sre:
-                                sr_sig = {"detected": False, "reason": f"error: {_sre}"}
-                                print(f"[SR-SIGNAL] {symbol}: error — {_sre}")
-                        else:
-                            sr_sig = {"detected": False, "reason": "sr_disabled_trending_asset"}
-
-                        if _try_fallback(sr_sig, "support_resistance", "SR-SIGNAL"):
-                            _fallback_traded = True
-                        else:
-                            # Every non-detection logged too — not just fires —
-                            # so we have full coverage per symbol per strategy
-                            # for future training, not just the rare positives.
-                            _log_rejection(symbol, f"sr_no_signal: {sr_sig.get('reason', '?')}",
-                                           timeframe=tf, signal_type="support_resistance",
-                                           detail={k: v for k, v in sr_sig.items() if k != "detected"})
-
-                            # M1 disabled globally: 27% WR, -$24.07 over 74 trades —
-                            # below RR2.5 breakeven (28.6%). Bypassed zone/blended/
-                            # macro-4H gates and produced every trade of the
-                            # 07-10→07-11 losing streak (8 straight SL hits).
-                            _m1_allowed = False
-                            if not _m1_allowed:
-                                m1_sig = {"detected": False, "reason": "m1_disabled_for_symbol"}
-                                _log_rejection(symbol, "m1_disabled_for_symbol", timeframe=tf)
-                            else:
-                                try:
-                                    from features.momentum.m1_signal import get_m1_momentum_signal
-                                    m1_sig = get_m1_momentum_signal(symbol)
-                                except Exception as _m1e:
-                                    m1_sig = {"detected": False, "reason": f"error: {_m1e}"}
-                                    print(f"[M1-SIGNAL] {symbol}: error — {_m1e}")
-
-                            if _try_fallback(m1_sig, "m1_confirmation", "M1-SIGNAL"):
-                                _fallback_traded = True
-                            else:
-                                _log_rejection(symbol, f"m1_no_signal: {m1_sig.get('reason', '?')}",
-                                               timeframe=tf, signal_type="m1_confirmation",
-                                               detail={k: v for k, v in m1_sig.items() if k != "detected"})
-
                     continue
 
                 bias = analysis["bias"]
@@ -1525,12 +1803,19 @@ def _scalp_auto_scan_inner():
                 # symbol's asset class (crypto/metals/forex), that side is
                 # frozen 4h for that class only — stops buying a falling market
                 # while the 4H trend lags, without freezing unrelated markets.
-                _brk_key = (_asset_class(symbol), bias)
-                if _brk_key in direction_breaker and now < direction_breaker[_brk_key]:
-                    _rem = int((direction_breaker[_brk_key] - now).total_seconds() // 60)
+                # Deux verrous : celui de la classe d'actif ET le verrou GLOBAL
+                # (voir update_direction_breaker). Le premier attrape un
+                # mouvement corrélé dans un marché, le second un retournement
+                # de régime qui traverse tous les marchés — c'est ce dernier
+                # qui manquait le 08-03.
+                _brk_hit = next(
+                    (k for k in ((_asset_class(symbol), bias), ("global", bias))
+                     if k in direction_breaker and now < direction_breaker[k]), None)
+                if _brk_hit:
+                    _rem = int((direction_breaker[_brk_hit] - now).total_seconds() // 60)
                     print(f"[DIR-BREAKER] {symbol} {bias} blocked {_rem}min "
-                          f"({_brk_key[0]} {bias} reversal protection)")
-                    _log_rejection(symbol, f"dir_breaker_{bias}_{_rem}min",
+                          f"({_brk_hit[0]} {bias} reversal protection)")
+                    _log_rejection(symbol, f"dir_breaker_{_brk_hit[0]}_{bias}_{_rem}min",
                                    score=ta_score, bias=bias)
                     continue
 
@@ -1540,17 +1825,9 @@ def _scalp_auto_scan_inner():
                     btc_lead_signal["ts"]   = now
                     print(f"[LEAD] BTC fired {bias} score={ta_score} → ETH/SOL prioritized for 45min")
 
-                # Rejet si contra-tendance HTF
-                if consensus == "bearish" and bias == "buy":
-                    conds = " | ".join(analysis.get("conditions", []))
-                    print(f"[MTF] {symbol} {tf} BUY rejected (HTF: bearish) score={ta_score} [{conds}]")
-                    _log_rejection(symbol, f"htf_contra BUY vs bearish", score=ta_score)
-                    continue
-                if consensus == "bullish" and bias == "sell":
-                    conds = " | ".join(analysis.get("conditions", []))
-                    print(f"[MTF] {symbol} {tf} SELL rejected (HTF: bullish) score={ta_score} [{conds}]")
-                    _log_rejection(symbol, f"htf_contra SELL vs bullish", score=ta_score)
-                    continue
+                # (rejets "htf_contra" retirés — c'était Gate A appliquant un
+                #  consensus 5m+1h calculé au niveau symbole à TOUS les
+                #  timeframes. Le filtre par timeframe ci-dessous le remplace.)
 
                 # ── HTF trend filter PER TRADING TIMEFRAME (user framework 2026-07-24)
                 # Trade only in the direction of the higher-TF trend, mapped to the
@@ -1574,12 +1851,64 @@ def _scalp_auto_scan_inner():
                                    score=ta_score, bias=bias)
                     continue
 
-                # Macro-4H hard block SUPPRIMÉ (gate trial 2026-07-14, 35 épisodes
-                # bloqués : 42.9% WR / +0.50R — il bloquait des trades gagnants,
-                # notamment les sells score 95-120 des 13-14/07). L'arbitrage de
-                # direction reste assuré par MTF_contra (-0.05R, justifié) +
-                # 1H-master (-0.10R, justifié) + le waiver 4H dans le scoring.
-                # _macro4h reste calculé plus haut et passé à l'engine.
+                # ── Macro-4H alignment gate — RÉTABLI le 2026-08-01 ───────────
+                # Il avait été supprimé le 2026-07-14 sur un essai de 35 épisodes
+                # (42.9% WR / +0.50R). Ré-évalué sur 36 643 signaux du dataset
+                # offline : les trades PRIS À CONTRE-SENS de la tendance 4H font
+                # -0.267R de moyenne et représentent ~24% de la population brute.
+                # 35 épisodes ne pouvaient pas trancher ça — l'échantillon était
+                # trop petit d'un facteur 1000.
+                #
+                # Mesuré EN PLUS du filtre par timeframe ci-dessus (donc le gain
+                # réel, pas le gain brut) : +0.0770R -> +0.1087R par trade, en ne
+                # retirant que 8.2% des signaux, et le R total MONTE
+                # (+1821 -> +2360). C'est le seul filtre testé qui améliore à la
+                # fois la qualité par trade ET le total.
+                #
+                # IMPORTANT : on utilise _ema_4h (pente EMA20 sur 4H), PAS
+                # _macro4h (qui est un consensus de STRUCTURE via get_htf_trend).
+                # C'est la définition EMA qui a été mesurée ; les deux ne sont pas
+                # interchangeables. Pour un trade 15m/30m ce gate fait doublon
+                # avec le filtre par timeframe (déjà 4H) — sans effet, inoffensif.
+                # Le vrai apport est sur le 5m, filtré par H1 uniquement.
+                if settings.get("htf_4h_filter_enabled", True):
+                    if _ema_4h != "neutral" and _ema_4h != _need:
+                        print(f"[MACRO-4H] {symbol} {tf} {bias} rejected — "
+                              f"4H EMA trend={_ema_4h}, need {_need}")
+                        _log_rejection(symbol, f"macro4h_contra_{bias}_vs_{_ema_4h}",
+                                       score=ta_score, bias=bias, timeframe=tf)
+                        continue
+
+                # ── Zone d'équilibre P/D — rejet optionnel ────────────────────
+                # Mesuré : les entrées entre 35% et 65% du range (ni discount ni
+                # premium franc) font +0.0998R contre +0.1172R hors zone. Couper
+                # cette zone monte la qualité par trade mais coupe ~49% du volume
+                # (R total +2360 -> +1420). Activé par défaut tant que le compte
+                # est petit : la survie dépend de la qualité, pas du volume.
+                # À désactiver après recapitalisation pour récupérer le volume.
+                if settings.get("skip_equilibrium_pd", True):
+                    _pdp = (analysis.get("premium_discount") or {}).get("position_pct")
+                    if _pdp is not None and 35 <= _pdp <= 65:
+                        print(f"[PD-EQUIL] {symbol} {tf} {bias} rejected — "
+                              f"P/D {_pdp:.0f}% is equilibrium (need <35% or >65%)")
+                        _log_rejection(symbol, f"pd_equilibrium_{_pdp:.0f}pct",
+                                       score=ta_score, bias=bias, timeframe=tf)
+                        continue
+
+                # ── Plancher ADX ──────────────────────────────────────────────
+                # L'engine ne bloque qu'en dessous de 10 ("marché mort"). Mesuré :
+                # ADX < 20 = -0.0202 à -0.0442R, ADX >= 20 = positif, ADX >= 40 =
+                # +0.0869R. Ce plancher généralise la règle qui n'existait que
+                # pour XAUUSD. Coûteux en volume (-40%) — comme ci-dessus, à
+                # relâcher une fois le compte reconstitué.
+                _min_adx = settings.get("min_adx", 20.0)
+                _adx_val = analysis.get("adx") or 0
+                if _min_adx > 0 and _adx_val < _min_adx:
+                    print(f"[ADX-FLOOR] {symbol} {tf} {bias} rejected — "
+                          f"ADX {_adx_val:.1f} < {_min_adx}")
+                    _log_rejection(symbol, f"adx_below_floor_{_adx_val:.0f}",
+                                   score=ta_score, bias=bias, timeframe=tf)
+                    continue
 
                 # OBV gate SUPPRIMÉ (gate trial 2026-07-14, 24 épisodes bloqués :
                 # 54.2% WR / +0.90R — les trades qu'il bloquait étaient les plus
@@ -1593,24 +1922,8 @@ def _scalp_auto_scan_inner():
                     _log_rejection(symbol, "no_entry_data", score=ta_score)
                     continue
 
-                # ── 2nd trade: same bias + strictly better price ──────────────
-                if _second_trade_check:
-                    new_entry   = entry_data["entry"]
-                    _chk_action = _second_trade_check["action"]
-                    _chk_price  = _second_trade_check["entry_price"]
-                    if bias != _chk_action:
-                        print(f"[2ND] {symbol}: {bias} ≠ open {_chk_action} → skip")
-                        _log_rejection(symbol, f"2nd_direction {bias}!={_chk_action}")
-                        continue
-                    if bias == "buy" and new_entry >= _chk_price:
-                        print(f"[2ND] {symbol}: BUY {new_entry} ≥ existing {_chk_price} → not better")
-                        _log_rejection(symbol, f"2nd_buy_not_cheaper")
-                        continue
-                    if bias == "sell" and new_entry <= _chk_price:
-                        print(f"[2ND] {symbol}: SELL {new_entry} ≤ existing {_chk_price} → not better")
-                        _log_rejection(symbol, f"2nd_sell_not_higher")
-                        continue
-                    print(f"[2ND] {symbol}: {bias} @ {new_entry} vs existing {_chk_price} → better price ✓")
+                # (bloc "2nd trade: same bias + strictly better price" retiré —
+                #  code mort, voir le skip max-1-position plus haut)
 
                 # ── Zone memory gate (before ML — saves ML call on rejection) ──
                 # Gate 1: hard reject if price is at a broken or historically
@@ -1762,21 +2075,29 @@ def _scalp_auto_scan_inner():
                 # ── Zone Memory boost (computed above at zone gate, reused here) ──
                 # zone_boost already set; printed by get_zone_boost() above.
 
-                # ── 50/200 EMA confluence bonus (5m+30m+1h all agree) ─────
-                # Counter-regime scalps still fire normally with no penalty
-                # (e.g. a clean 5m SELL during a 1H bullish stretch). The
-                # bonus only kicks in on the rarer, higher-conviction case
-                # where ALL THREE timeframes' EMA50/200 agree with the bias.
+                # ── 50/200 EMA confluence bonus: DISABLED as of 2026-07-30 ──
+                # Originally: +15pts when 5m+30m+1h EMA50/200 all agree with
+                # bias, framed as a rare high-conviction confirmation.
+                # Real data (466 closed trades, scalp_log mining): this
+                # condition fired in 23.5% of LOSSES vs only 11.9% of WINS —
+                # roughly double the rate in losers. Likely explanation: full
+                # 3-timeframe EMA agreement tends to mean the move is already
+                # mature/extended across every timeframe, which correlates
+                # with late entries rather than early ones (consistent with
+                # "deep premium" entries also underperforming in the same
+                # analysis). Zeroing the bonus rather than flipping it to a
+                # penalty — data supports "this doesn't help", not yet strong
+                # enough to say "this should actively subtract points".
                 ema_boost   = 0.0
                 conf_regime = ema_confluence.get("regime", "mixed")
-                if (bias == "buy"  and conf_regime == "bullish") or \
-                   (bias == "sell" and conf_regime == "bearish"):
-                    ema_boost = 15.0
-                    print(f"[EMA-CROSS] {symbol}: 5m+30m+1h EMA confluence="
-                          f"{conf_regime} confirms {bias} +{ema_boost}pts")
-                else:
-                    print(f"[EMA-CROSS] {symbol}: regimes={ema_confluence['tfs']} "
-                          f"(no confluence with {bias}, no score impact)")
+                # if (bias == "buy"  and conf_regime == "bullish") or \
+                #    (bias == "sell" and conf_regime == "bearish"):
+                #     ema_boost = 15.0
+                #     print(f"[EMA-CROSS] {symbol}: 5m+30m+1h EMA confluence="
+                #           f"{conf_regime} confirms {bias} +{ema_boost}pts")
+                # else:
+                #     print(f"[EMA-CROSS] {symbol}: regimes={ema_confluence['tfs']} "
+                #           f"(no confluence with {bias}, no score impact)")
 
                 blended_score = round(
                     ta_score + ml_boost + sym_boost + lead_boost
@@ -1813,12 +2134,72 @@ def _scalp_auto_scan_inner():
                 _sl_width = abs(entry_data["entry"] - entry_data["sl"])
                 _atr_for_gate = analysis.get("atr", 0)
                 if _atr_for_gate > 0 and _sl_width > 2.5 * _atr_for_gate:
-                    print(f"[SL-WIDE] {symbol} {tf}: SL width {_sl_width:.3f} > "
-                          f"2.5×ATR({_atr_for_gate:.3f}={2.5*_atr_for_gate:.3f}) — skipped")
+                    print(f"[SL-WIDE] {symbol} {tf}: SL width {_sl_width:.5g} > "
+                          f"2.5xATR({_atr_for_gate:.5g}={2.5*_atr_for_gate:.5g}) - skipped")
+                    # %.5g, pas round(x,3) : sur EURUSD un ATR de 0.00044
+                    # s'affichait "ATR(0.0)", ce qui donnait l'impression d'un
+                    # ATR nul et d'un gate cassé. Le gate est correct (il exige
+                    # _atr_for_gate > 0 juste au-dessus) — c'était l'arrondi à
+                    # 3 décimales qui écrasait un instrument coté à 5.
                     _log_rejection(symbol,
-                        f"sl_too_wide: {round(_sl_width,3)} > 2.5×ATR({round(_atr_for_gate,3)})",
+                        f"sl_too_wide: {_sl_width:.5g} > 2.5xATR({_atr_for_gate:.5g})",
                         score=ta_score, bias=bias)
                     continue
+
+                # ── Meta-model gate — DERNIER filtre, en OBSERVATION ──────────
+                # Ne prédit pas le marché (build_lstm.py a déjà échoué sur cette
+                # question : AUC 0.494-0.534, un tirage à pile ou face). Il note
+                # un signal que le moteur a DÉJÀ décidé de prendre.
+                #
+                # Validation en walk-forward (4 plis glissants, avril->juillet) :
+                #   prendre tout      : +0.178 à +0.265 R/trade selon le pli
+                #   top 10% du modèle : +0.190 à +0.484 R/trade
+                #   gain moyen +0.1247R, positif sur 4 plis / 4
+                # (holdout 25% à l'entraînement : +0.2484 -> +0.4071, +0.1587R)
+                #
+                # Pourquoi ce n'est pas le piège des filtres précédents (P/D, ADX,
+                # qui remontaient la moyenne en jetant du profit) : le bot ignore
+                # DÉJÀ ~94% des signaux. Le dataset en produit ~108/jour, le bot
+                # en prend ~6 — le premier qui trouve un slot libre. Passer au
+                # top 10% ne retire pas des trades qu'on aurait pris, ça remplace
+                # une sélection ARBITRAIRE par une sélection classée, à volume égal.
+                #
+                # meta_gate_enabled=False : on note et on journalise, on ne bloque
+                # RIEN. À laisser en observation le temps de vérifier en live que
+                # le score se comporte comme à l'entraînement.
+                _meta_r = None
+                try:
+                    from features.trading import meta_gate
+                    _meta_r = meta_gate.predict_r(analysis, symbol, bias, _ema_4h)
+                except Exception as _mge:
+                    print(f"[META] {symbol}: {_mge}")
+                if _meta_r is not None:
+                    _meta_thr = settings.get("meta_gate_threshold")
+                    if _meta_thr is None:
+                        _meta_thr = meta_gate.get_threshold()
+                    _pass = _meta_thr is None or _meta_r >= _meta_thr
+                    _mode = "GATE" if settings.get("meta_gate_enabled") else "shadow"
+                    print(f"[META/{_mode}] {symbol} {tf} {bias}: predicted "
+                          f"{_meta_r:+.3f}R vs threshold {_meta_thr:.3f} → "
+                          f"{'pass' if _pass else 'below'}")
+                    analysis["meta_r"] = _meta_r
+                    # Persist EVERY score, traded or not. In shadow mode the
+                    # whole point is to collect data, and a print() to stdout
+                    # is not data — the first shadow run logged 13 trades and
+                    # zero scores because nothing wrote them down.
+                    # This row is informational, not a rejection: the signal
+                    # continues unless the gate is armed AND the score is low.
+                    _log_rejection(symbol,
+                                   f"meta_shadow_{_meta_r:+.4f}_thr{_meta_thr:.4f}_"
+                                   f"{'pass' if _pass else 'below'}",
+                                   score=ta_score, bias=bias, timeframe=tf,
+                                   signal_type="meta_shadow",
+                                   detail={"meta_r": _meta_r, "threshold": _meta_thr,
+                                           "pass": _pass, "blended": blended_score})
+                    if settings.get("meta_gate_enabled") and not _pass:
+                        _log_rejection(symbol, f"meta_gate_low_{_meta_r:+.3f}",
+                                       score=ta_score, bias=bias, timeframe=tf)
+                        continue
 
                 # Full app control (user choice 2026-07-24: "respect every parameter
                 # from the app"). Lot per symbol comes from the app's lot_sizes;
@@ -1875,17 +2256,134 @@ def _scalp_auto_scan_inner():
                               f"(RR {_rr_actual:.1f}x → {_MIN_RR}x)")
                         entry_data = {**entry_data, "tp1": _rr_new_tp, "rr_ratio": _MIN_RR}
 
-                trade = place_trade(
-                    symbol=       symbol,
-                    action=       bias,
-                    entry=        entry_data["entry"],
-                    sl=           entry_data["sl"],
-                    tp1=          entry_data["tp1"],
-                    confidence=   analysis["scalping_score"] / 100,
-                    risk_percent= settings["risk_percent"],
-                    max_trades=   settings["max_trades"],
-                    fixed_lot=    fixed_lot,
-                )
+                # ── Entrée limite : ACHATS UNIQUEMENT (2026-08-08) ────────────
+                # Mesuré sur 21 703 signaux (entrée marché vs limite à 1xATR,
+                # politique de sortie live) :
+                #
+                #            avg R/trade            R TOTAL
+                #            marché  limite      marché  limite
+                #   ACHAT    +0.189  +0.342      +2495   +3275   -> limite gagne
+                #   VENTE    +0.289  +0.335      +2455   +1989   -> MARCHÉ gagne
+                #
+                # L'ordre limite obtient un meilleur prix dans les DEUX sens,
+                # mais il ne se remplit qu'à ~71%. Sur les ventes, les setups
+                # manqués coûtent plus que le meilleur prix ne rapporte : -466R
+                # au total. Sur les achats il rapporte +780R.
+                #
+                # Le live dit la même chose en plus net (semaine du 08-03) :
+                # achats en attente +70.62$, ventes en attente -45.73$ avec
+                # 0 gain sur 9 — aucune vente en attente n'a JAMAIS gagné.
+                #
+                # Explication mécanique : un buy-limit est sous le marché, il
+                # se remplit sur un repli puis le mouvement reprend. Un
+                # sell-limit est au-dessus, il se remplit sur un rebond — et
+                # dans un marché qui monte le rebond continue simplement.
+                #
+                # RÉSERVE : la semaine testée était haussière sur tous les
+                # marchés (XAG +9.6%, XAU +7.0%). Le backtest janvier-juillet
+                # confirme le sens, mais l'ampleur est flattée par le régime.
+                # À réexaminer sur une vraie phase baissière.
+                _use_pending = (settings.get("pending_entry_enabled")
+                                and fixed_lot > 0
+                                and bias == "buy")
+                if _use_pending:
+                    # Plancher de respiration 0.3xATR → 1.0xATR (2026-08-20).
+                    # compute_risk_based_entry rapproche l'ENTRÉE du SL pour
+                    # tenir le budget de 7%. À 0.3xATR il pouvait produire des
+                    # stops de la largeur du bruit. Mesuré sur la semaine
+                    # 08-17→20 :
+                    #     <1xATR : 3 trades, -0.58R, 33% WR
+                    #     >=1xATR: 18 trades, TOUS les cubes positifs
+                    # Les trois trades sous 1xATR (0.54 / 0.63 / 0.70) valaient
+                    # -6.50$. En dessous d'un ATR, le stop est atteint par la
+                    # respiration normale du marché avant que le setup ait eu
+                    # le temps de jouer — XAGUSD mourait en 2 minutes.
+                    # Conséquence assumée : les signaux qui ne tiennent pas
+                    # dans 7% avec 1xATR de marge sont refusés (mode reject)
+                    # au lieu d'être pris en pari serré.
+                    _atr_buf = 1.0 * analysis.get("atr", 0)
+                    _rbe = compute_risk_based_entry(
+                        symbol=          SYMBOL_MAP.get(symbol.upper(), symbol),
+                        action=          bias,
+                        sl=              entry_data["sl"],
+                        market_price=    entry_data["entry"],
+                        fixed_lot=       fixed_lot,
+                        target_risk_pct= settings.get("target_risk_pct", 5.0),
+                        min_buffer_price=_atr_buf,
+                    )
+                    print(f"[RISK-ENTRY] {symbol} {tf}: {_rbe['mode']} — {_rbe['reason']}")
+
+                    if _rbe["mode"] == "reject":
+                        _log_rejection(symbol, f"risk_entry_reject: {_rbe['reason']}",
+                                        score=ta_score, bias=bias)
+                        continue
+
+                    if _rbe["mode"] == "pending":
+                        trade = place_pending_trade(
+                            symbol=         symbol,
+                            action=         bias,
+                            entry_price=    _rbe["entry_price"],
+                            sl=             entry_data["sl"],
+                            tp1=            entry_data["tp1"],
+                            confidence=     analysis["scalping_score"] / 100,
+                            fixed_lot=      fixed_lot,
+                            expire_minutes= settings.get("pending_expire_minutes", 0),
+                        )
+                        if not trade.get("success"):
+                            print(f"[LG-PRIMARY] {symbol}: "
+                                  f"place_pending_trade failed — {trade.get('reason')}")
+                            _log_rejection(symbol, f"lg_primary_pending_failed: {trade.get('reason')}",
+                                            score=ta_score, bias=bias)
+                            continue
+
+                        # ── Log the price the ORDER was actually placed at ────
+                        # The pending entry sits closer to SL than the market
+                        # price entry_data["entry"] was computed from. Logging
+                        # the market price meant trade_signals recorded an
+                        # entry the trade never had — and _track_excursion
+                        # reads exactly that row to derive risk = |entry - sl|,
+                        # so every MFE/MAE for a pending trade was scaled by
+                        # the wrong R. TP is unchanged by the pending move, so
+                        # the true RR is higher than the pre-move rr_ratio;
+                        # recompute it here rather than logging the stale one.
+                        # sl/tp come back from the executor already clamped to
+                        # the broker's trade_stops_level — log what's on the
+                        # order, not what we asked for.
+                        _pe    = trade.get("price", _rbe["entry_price"])
+                        _psl   = trade.get("sl", entry_data["sl"])
+                        _ptp   = trade.get("tp", entry_data["tp1"])
+                        _prisk = abs(_pe - _psl)
+                        entry_data = {
+                            **entry_data,
+                            "entry":    _pe,
+                            "sl":       _psl,
+                            "tp1":      _ptp,
+                            "rr_ratio": round(abs(_ptp - _pe) / _prisk, 2)
+                                        if _prisk > 0 else entry_data.get("rr_ratio"),
+                        }
+                        print(f"[RISK-ENTRY] {symbol} {tf}: pending logged at "
+                              f"entry={_pe} sl={_psl} tp={_ptp} "
+                              f"RR={entry_data['rr_ratio']} (was market {_rbe.get('entry_price')})")
+                        # Skip the normal market place_trade call below —
+                        # already placed as a pending order.
+                        _pending_already_placed = True
+                    else:
+                        _pending_already_placed = False
+                else:
+                    _pending_already_placed = False
+
+                if not _pending_already_placed:
+                    trade = place_trade(
+                        symbol=       symbol,
+                        action=       bias,
+                        entry=        entry_data["entry"],
+                        sl=           entry_data["sl"],
+                        tp1=          entry_data["tp1"],
+                        confidence=   analysis["scalping_score"] / 100,
+                        risk_percent= settings["risk_percent"],
+                        max_trades=   settings["max_trades"],
+                        fixed_lot=    fixed_lot,
+                    )
 
                 if trade.get("success"):
                     _log_entry = {
@@ -1904,6 +2402,8 @@ def _scalp_auto_scan_inner():
                         "tp1":           entry_data["tp1"],
                         "rr":            entry_data.get("rr_ratio"),
                         "ml_win_prob":   ml_prob,
+                        "meta_r":        analysis.get("meta_r"),   # shadow score, for
+                                                                   # predicted-vs-realised
                         "news_boost":    news_boost,
                         "zone_boost":    zone_boost,
                         "ema_boost":     ema_boost,
@@ -1933,6 +2433,10 @@ def _scalp_auto_scan_inner():
                     cooldown_min = settings.get("cooldown_minutes", 8)
                     scalp_cooldowns[symbol] = now + timedelta(minutes=cooldown_min)
                     scalp_state["trades_today"] += 1
+                    # marque le symbole comme tradé pour que la passe
+                    # price-action après la boucle le saute (place_trade la
+                    # refuserait de toute façon : 1 position par symbole)
+                    _fallback_traded = True
                     print(f"[!] LG-PRIMARY: {symbol} {bias} score={analysis['scalping_score']} HTF={consensus} ticket={trade.get('ticket')}")
                 else:
                     fail_reason = trade.get('reason', 'unknown')
@@ -1946,6 +2450,41 @@ def _scalp_auto_scan_inner():
                 err = str(e).encode('ascii', errors='replace').decode()
                 print(f"Scalp error {symbol} {tf}: {err}")
                 _log_rejection(symbol, f"exception: {err}")
+
+        # ── PASSE PRICE-ACTION — indépendante de LG (2026-08-01) ──────────
+        # Elle tournait auparavant DANS la branche "score LG insuffisant",
+        # donc uniquement quand LG échouait son contrôle de score. Or le
+        # chemin LG contient 13 autres `continue` (filtre 4H, zone, ML,
+        # largeur de SL, blended...) : un signal LG bien noté mais rejeté
+        # plus loin faisait passer le symbole sans que price-action ait
+        # jamais son mot à dire.
+        #
+        # Ici la passe s'exécute APRÈS la boucle timeframe, quelle que soit
+        # la raison pour laquelle LG n'a pas tradé — c'est ce qui la rend
+        # réellement additive et augmente le nombre de trades.
+        #
+        # Une seule position par symbole reste la règle : place_trade()
+        # refuse toute 2e position (décision post-mortem sur 4 paires
+        # d'averaging perdantes). PA ne double donc jamais un trade LG,
+        # il occupe les symboles que LG a laissés passer.
+        if PA_FALLBACK_ENABLED and not _fallback_traded:
+            _pa_tf = "15m" if "15m" in settings["enabled_timeframes"] \
+                     else settings["enabled_timeframes"][0]
+            try:
+                from features.price_action.strategy import get_price_action_signal
+                pa_sig = get_price_action_signal(symbol, tf=_pa_tf, htf="4h")
+            except Exception as _pae:
+                pa_sig = {"detected": False, "reason": f"error: {_pae}"}
+                print(f"[PA-SIGNAL] {symbol}: error — {_pae}")
+
+            if pa_sig.get("detected"):
+                print(f"[PA-SIGNAL] {symbol} {_pa_tf}: {pa_sig['description']}")
+            if _try_fallback(pa_sig, "price_action", "PA-SIGNAL", _pa_tf):
+                _fallback_traded = True
+            else:
+                _log_rejection(symbol, f"pa_no_signal: {pa_sig.get('reason', '?')}",
+                               timeframe=_pa_tf, signal_type="price_action",
+                               detail={k: v for k, v in pa_sig.items() if k != "detected"})
 
     scalp_state["last_scan"] = now.isoformat()
 
@@ -1969,6 +2508,7 @@ def start_scalping(settings: ScalpingSettings):
     scalp_state["session_start"]  = datetime.now().isoformat()
     # Fresh session → clear streak pauses so previously paused symbols can trade again
     symbol_paused_until.clear()
+    symbol_streak_anchor.clear()
     scan_rejections.clear()
     return {"success": True, "message": "Scalping bot started", "settings": d}
 
@@ -2154,12 +2694,11 @@ def scalping_scan_now():
                         analysis["scalping_score"] = 0
                         analysis["conditions"]     = ["XAUUSD: approaching zone rejected — inside zone only"]
 
-                # Vérification filtres sans placer de trade
-                htf_ok = (
-                    consensus != "conflict" and
-                    not (consensus == "bearish" and bias == "buy") and
-                    not (consensus == "bullish" and bias == "sell")
-                )
+                # Vérification filtres sans placer de trade — doit refléter le
+                # filtre RÉEL du scan (par timeframe), pas l'ancien consensus.
+                _prev_filter_tf = "1h" if tf in ("5m", "1m", "3m") else "4h"
+                _prev_trend     = _ema_macro_trend(symbol, _prev_filter_tf)
+                htf_ok = _prev_trend == ("bullish" if bias == "buy" else "bearish")
 
                 results.append({
                     "symbol":       symbol,
@@ -2169,6 +2708,8 @@ def scalping_scan_now():
                     "bias":         bias,
                     "htf_trends":   htf_data["trends"],
                     "htf_consensus": consensus,
+                    "htf_filter_tf":    _prev_filter_tf,
+                    "htf_filter_trend": _prev_trend,
                     "htf_ok":       htf_ok,
                     "session_ok":   session,
                     "cooldown":     cooldown,

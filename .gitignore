@@ -27,7 +27,16 @@ build/
 
 # Logs
 *.log
+*.log.err
+*.err
 history.txt
+
+# Backups / one-off archives — bulky, regenerable, no code value
+*.bak_*
+archive_*.jsonl.gz
+
+# Study intermediates — rewritten by the study scripts that produce them
+gate_study_rows.csv
 
 # ML model binary (large file)
 *.pkl

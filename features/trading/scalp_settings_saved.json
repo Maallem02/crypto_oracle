@@ -1,5 +1,5 @@
 {
-  "risk_percent": 5.0,
+  "risk_percent": 3.0,
   "min_score": 60.0,
   "max_trades": 11,
   "max_daily_trades": 0,
@@ -7,11 +7,9 @@
   "enabled_symbols": [
     "BTC",
     "ETH",
-    "EURUSD",
-    "GBPJPY",
+    "XAGUSD",
     "XAUUSD",
-    "USDJPY",
-    "XAGUSD"
+    "EURUSD"
   ],
   "enabled_timeframes": [
     "15m",
@@ -25,12 +23,24 @@
   ],
   "lot_sizes": {
     "BTC": 0.02,
-    "ETH": 0.17,
+    "ETH": 0.2,
     "XAUUSD": 0.01,
     "EURUSD": 0.03,
     "USDJPY": 0.03,
-    "GBPJPY": 0.02,
+    "GBPJPY": 0.03,
     "XAGUSD": 0.01
   },
-  "ml_threshold": 0.0
+  "ml_threshold": 0.0,
+  "pending_entry_enabled": true,
+  "target_risk_pct": 7.0,
+  "pending_expire_minutes": 0,
+  "trail_start_r": 1.0,
+  "trail_start_pct": 0.4,
+  "be_trigger_r": 1.5,
+  "meta_gate_enabled": false,
+  "meta_gate_threshold": null,
+  "htf_4h_filter_enabled": true,
+  "skip_equilibrium_pd": false,
+  "min_adx": 0.0,
+  "pending_max_age_minutes": 480
 }

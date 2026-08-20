@@ -449,19 +449,22 @@ def run_scalping_analysis(df: pd.DataFrame, symbol: str = "", macro_trend: str =
 
     counter_reasons = _counter_reasons(lg_type)
 
-    # ── Pullback avec la tendance 4H : le momentum court-terme opposé EST
-    # le pullback qu'on cherche à trader, pas un veto (étude contrefactuelle
-    # 07-11→07-14, 232 épisodes bloqués : les entrées alignées 4H tuées par
-    # ce veto gagnaient 49% WR / +0.71R). Une structure LTF confirmée
-    # opposée reste un vrai veto (retournement, pas pullback).
+    # ── Counter-trend waiver: DISABLED as of 2026-07-30 ───────────────────
+    # Originally added on a counterfactual backtest (07-11→07-14, 232 blocked
+    # episodes projected at 49% WR / +0.71R if waived). Real forward results
+    # once this went live: only 21.4% WR over 28 actual waived trades — the
+    # backtest did not generalize. Reverting to the full hard veto (all 5
+    # counter-trend reasons block, not just confirmed structure) until a
+    # better-supported middle ground is found. Left commented out (not
+    # deleted) in case a partial version of this is worth revisiting later.
     _ct_waived = None
-    if macro_trend in ("bullish", "bearish") and lg_type == macro_trend and counter_reasons:
-        _hard = [r for r in counter_reasons if "structure" in r]
-        if not _hard:
-            _ct_waived = " | ".join(counter_reasons)
-            counter_reasons = []
-        else:
-            counter_reasons = _hard
+    # if macro_trend in ("bullish", "bearish") and lg_type == macro_trend and counter_reasons:
+    #     _hard = [r for r in counter_reasons if "structure" in r]
+    #     if not _hard:
+    #         _ct_waived = " | ".join(counter_reasons)
+    #         counter_reasons = []
+    #     else:
+    #         counter_reasons = _hard
 
     # If the trend opposes the primary LG and an alt-direction LG exists,
     # switch to it instead of wasting a high-confidence trend read — profit
@@ -728,6 +731,19 @@ def run_scalping_analysis(df: pd.DataFrame, symbol: str = "", macro_trend: str =
         # before they ran. 2.5x ATR ~doubles expectancy (BTC +0.14, gold +0.08).
         # NOTE: wider SL = ~1.6x bigger $ risk per FIXED lot — reduce app lots
         # ~40% (or use risk-based sizing) to keep the same dollar risk.
+        #
+        # ── TP1 target selection: 2026-07-30 ──────────────────────────────
+        # Real trade data showed 76% of trades never even reach 1.5R, and of
+        # the ones that do, only ~1 in 30 ever gets near the full 2.5-3.0R
+        # target — most of that far distance was never realistic to begin
+        # with. Instead of a blind fixed R-multiple, target the NEAREST real
+        # liquidity level (actual swing high/low cluster) in the trade's
+        # direction when one exists and is still worth taking (>=1.3R away).
+        # Falls back to the old fixed-RR target when no qualifying level is
+        # found, so behavior is unchanged on symbols/setups with no clean
+        # nearby structure.
+        _MIN_TP_RR = 1.3
+        _liq = detect_liquidity(df)
         if bias == "buy":
             sl_struct = scalping_entry["sl"]
             sl_atr    = round(entry_price - atr * 2.5, 5)
@@ -735,7 +751,13 @@ def run_scalping_analysis(df: pd.DataFrame, symbol: str = "", macro_trend: str =
             sl_cap    = round(entry_price - atr * 3.0, 5)
             new_sl    = max(new_sl, sl_cap)
             risk      = abs(entry_price - new_sl)
-            new_tp1   = round(entry_price + risk * _tp_rr, 5)
+            rr_tp1    = round(entry_price + risk * _tp_rr, 5)
+            candidates = [lvl for lvl in _liq.get("buy_side", []) if lvl > entry_price]
+            struct_tp1 = min(candidates) if candidates else None
+            if struct_tp1 is not None and (struct_tp1 - entry_price) >= risk * _MIN_TP_RR:
+                new_tp1 = min(struct_tp1, rr_tp1)
+            else:
+                new_tp1 = rr_tp1
             new_tp2   = round(entry_price + risk * 4.0, 5)
         else:
             sl_struct = scalping_entry["sl"]
@@ -744,8 +766,16 @@ def run_scalping_analysis(df: pd.DataFrame, symbol: str = "", macro_trend: str =
             sl_cap    = round(entry_price + atr * 3.0, 5)
             new_sl    = min(new_sl, sl_cap)
             risk      = abs(entry_price - new_sl)
-            new_tp1   = round(entry_price - risk * _tp_rr, 5)
+            rr_tp1    = round(entry_price - risk * _tp_rr, 5)
+            candidates = [lvl for lvl in _liq.get("sell_side", []) if lvl < entry_price]
+            struct_tp1 = max(candidates) if candidates else None
+            if struct_tp1 is not None and (entry_price - struct_tp1) >= risk * _MIN_TP_RR:
+                new_tp1 = max(struct_tp1, rr_tp1)
+            else:
+                new_tp1 = rr_tp1
             new_tp2   = round(entry_price - risk * 4.0, 5)
+
+
 
         risk   = abs(entry_price - new_sl)
         reward = abs(new_tp1 - entry_price)

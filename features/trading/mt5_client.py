@@ -5,6 +5,54 @@ from core.config import runtime
 
 load_dotenv()
 
+
+def ensure_mt5() -> bool:
+    """
+    Canonical IDEMPOTENT MT5 attach — the single init used by every module.
+
+    Si le terminal est déjà connecté au bon compte, ne fait RIEN. Un
+    mt5.initialize(login=...) forcé re-logge le terminal à CHAQUE appel, ce
+    qui écrase toute session manuelle ouverte dans le GUI — le terminal
+    bascule alors de compte toutes les quelques secondes.
+
+    Il existait 4 implémentations divergentes de cet init (mt5_client,
+    router, executor, fetcher) : seule celle du router était idempotente,
+    donc executor.place_trade() re-loggait le terminal à chaque ordre et
+    annulait la protection. Les trois autres délèguent maintenant ici.
+
+    Le login explicite reste fait quand il est nécessaire (terminal
+    déconnecté ou connecté au MAUVAIS compte) — c'est aussi ce qui résout
+    le retcode 10027 dans les threads du scheduler.
+
+    Returns True si un terminal est joignable.
+    """
+    login_id = os.getenv("MT5_LOGIN")
+    password = os.getenv("MT5_PASSWORD")
+    server   = os.getenv("MT5_SERVER")
+
+    # Déjà connecté au bon compte → no-op (pas de re-login, pas de bascule)
+    try:
+        acc = mt5.account_info()
+        if acc and (not login_id or acc.login == int(login_id)):
+            return True
+    except Exception:
+        pass
+
+    kwargs = {"timeout": 10000}
+    if runtime.mt5_path:
+        kwargs["path"] = runtime.mt5_path
+    if login_id and password and server:
+        kwargs["login"]    = int(login_id)
+        kwargs["password"] = password
+        kwargs["server"]   = server
+        return bool(mt5.initialize(**kwargs))
+
+    # Pas de credentials : n'initialise que si le terminal n'est pas déjà up
+    if mt5.terminal_info() is None:
+        return bool(mt5.initialize(**kwargs))
+    return True
+
+
 def connect():
     login_id = os.getenv("MT5_LOGIN")
     password  = os.getenv("MT5_PASSWORD")

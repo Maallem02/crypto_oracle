@@ -3,10 +3,9 @@ import numpy as np
 import requests
 import ccxt
 import time
-import os
+import threading
 import MetaTrader5 as mt5
 from datetime import datetime, timedelta
-from core.config import runtime
 
 # ── Mapping des symboles ───────────────────────────────────────────────
 CRYPTO_SYMBOLS = {
@@ -55,19 +54,15 @@ MT5_TIMEFRAMES = {
 }
 
 def _mt5_init():
-    if mt5.terminal_info() is not None:
-        return
-    kwargs = {"timeout": 10000}
-    if runtime.mt5_path:
-        kwargs["path"] = runtime.mt5_path
-    login_id = os.getenv("MT5_LOGIN")
-    password  = os.getenv("MT5_PASSWORD")
-    server    = os.getenv("MT5_SERVER")
-    if login_id and password and server:
-        kwargs["login"]    = int(login_id)
-        kwargs["password"] = password
-        kwargs["server"]   = server
-    mt5.initialize(**kwargs)
+    """
+    Attache le terminal (idempotent) — délègue à mt5_client.ensure_mt5().
+
+    L'ancienne version ne testait que terminal_info(), qui est non-None même
+    quand le terminal est loggé sur le MAUVAIS compte : elle ne réparait
+    donc jamais cet état, elle le laissait passer silencieusement.
+    """
+    from features.trading.mt5_client import ensure_mt5
+    ensure_mt5()
 
 # ── Fetch via MT5 (même broker feed que l'exécution des trades) ───────
 def fetch_mt5_candles(symbol: str, timeframe: str, limit: int = 200) -> pd.DataFrame:
@@ -199,12 +194,83 @@ def fetch_forex_candles(symbol: str, timeframe: str) -> pd.DataFrame:
 
     return df
 
+# ── Cache court-durée des bougies ─────────────────────────────────────
+# Un scan demande la MÊME série plusieurs fois : la 1h est récupérée 5 fois
+# par symbole et par scan (get_htf_trend 250, get_ema_confluence 250,
+# get_obv_bias 30, _ema_macro_trend 60, get_market_regime 50) — chacune par
+# une fonction différente qui ignore que les autres viennent de le faire.
+# Sur 5 symboles c'était ~65-95 allers-retours IPC par minute pour ~30
+# séries réellement distinctes.
+#
+# TTL proportionnel au timeframe (tf/20, borné 5-60s) : une bougie 1h
+# servie pendant 60s est fraîche à 1.7% près, une bougie 1m pendant 5s à
+# 8%. On NE cache PAS par "bucket de bougie" : copy_rates_from_pos inclut
+# la bougie EN COURS, la figer jusqu'à la clôture rendrait current_price
+# obsolète et changerait les décisions de trade.
+#
+# À noter : le prix d'exécution ne vient jamais d'ici — place_trade()
+# ré-ancre systématiquement SL/TP sur le tick live (symbol_info_tick).
+_TF_SECONDS = {
+    "1m": 60, "3m": 180, "5m": 300, "15m": 900,
+    "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400,
+}
+_candle_cache: dict = {}          # (symbol, tf) -> {"df", "limit", "expires"}
+_candle_cache_lock = threading.Lock()
+
+
+def _cache_ttl(timeframe: str) -> float:
+    secs = _TF_SECONDS.get(timeframe)
+    if not secs:
+        return 0.0                # timeframe inconnu → pas de cache
+    return max(5.0, min(60.0, secs / 20.0))
+
+
+def clear_candle_cache():
+    """Vide le cache — utile après un changement de compte/symbole."""
+    with _candle_cache_lock:
+        _candle_cache.clear()
+
+
+def candle_cache_stats() -> dict:
+    with _candle_cache_lock:
+        return {"entries": len(_candle_cache),
+                "keys": [f"{s}:{tf}" for s, tf in _candle_cache]}
+
+
 # ── Point d'entrée unifié ─────────────────────────────────────────────
-def fetch_candles(symbol: str, timeframe: str = "15m", limit: int = 200) -> pd.DataFrame:
+def fetch_candles(symbol: str, timeframe: str = "15m", limit: int = 200,
+                  use_cache: bool = True) -> pd.DataFrame:
     """Candles depuis MT5 — même feed que l'exécution des trades (plus de
-    décalage entre l'analyse TA et le prix réel du broker)."""
+    décalage entre l'analyse TA et le prix réel du broker).
+
+    Passer use_cache=False pour forcer un aller-retour MT5 frais.
+    """
     symbol = symbol.upper()
-    return fetch_mt5_candles(symbol, timeframe, limit)
+    ttl = _cache_ttl(timeframe)
+    if not use_cache or ttl <= 0:
+        return fetch_mt5_candles(symbol, timeframe, limit)
+
+    key = (symbol, timeframe)
+    now = time.monotonic()
+
+    with _candle_cache_lock:
+        hit = _candle_cache.get(key)
+        # Une entrée ne sert que si elle couvre AU MOINS le nombre de
+        # bougies demandé — sinon l'appelant recevrait une série tronquée.
+        if hit and hit["expires"] > now and hit["limit"] >= limit:
+            return hit["df"].tail(limit).copy()
+
+    # Fetch hors verrou : un appel MT5 lent ne doit pas bloquer les autres
+    # threads du scheduler. Deux threads peuvent fetcher la même série en
+    # même temps au pire — sans conséquence, le dernier écrit gagne.
+    fetch_limit = max(limit, (hit or {}).get("limit", 0))
+    df = fetch_mt5_candles(symbol, timeframe, fetch_limit)
+
+    with _candle_cache_lock:
+        _candle_cache[key] = {"df": df, "limit": len(df),
+                              "expires": time.monotonic() + ttl}
+
+    return df.tail(limit).copy()
 
 # ── Prix actuel ────────────────────────────────────────────────────────
 def get_current_price(symbol: str) -> dict:
