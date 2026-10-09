@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../providers/auth_provider.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../widgets/loading_indicator.dart';
+import '../../../widgets/server_url_dialog.dart';
 
 class LoginScreen extends ConsumerStatefulWidget {
   const LoginScreen({super.key});
@@ -44,6 +45,21 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.background,
+      // Server-address entry point. Must live OUTSIDE the authenticated area:
+      // if the backend URL is wrong, login itself fails, so a setting behind
+      // login could never be reached to fix it.
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        automaticallyImplyLeading: false,
+        actions: [
+          IconButton(
+            tooltip: 'Server address',
+            icon: const Icon(Icons.dns_outlined, color: AppColors.primary),
+            onPressed: () => ServerUrlDialog.show(context),
+          ),
+        ],
+      ),
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(

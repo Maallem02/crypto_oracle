@@ -7,6 +7,46 @@ const _allSymbols    = ['BTC', 'ETH', 'SOL', 'XAUUSD', 'XAGUSD', 'GBPJPY', 'BNB'
 const _allTimeframes = ['5m', '15m', '30m', '1h'];
 const _allHtf        = ['15m', '30m', '1h', '4h'];
 
+String _updatedLabel(DateTime? t) {
+  if (t == null) return 'auto-refresh 30 s';
+  String two(int n) => n.toString().padLeft(2, '0');
+  return 'updated ${two(t.hour)}:${two(t.minute)}:${two(t.second)} · auto 30 s';
+}
+
+String _money(num v) => '${v >= 0 ? '+' : '-'}\$${v.abs().toStringAsFixed(2)}';
+
+String _localTime(String? iso) {
+  final t = iso == null ? null : DateTime.tryParse(iso)?.toLocal();
+  if (t == null) return '--';
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${two(t.day)}/${two(t.month)} ${two(t.hour)}:${two(t.minute)}';
+}
+
+/// "BTCUSDm" -> "BTCUSD" (suffixe de compte Exness)
+String _sym(Object? s) {
+  final v = (s ?? '').toString();
+  return v.endsWith('m') ? v.substring(0, v.length - 1) : v;
+}
+
+String _duration(num minutes) {
+  final m = minutes.round();
+  if (m < 60) return '${m}m';
+  if (m < 1440) return '${m ~/ 60}h${(m % 60).toString().padLeft(2, '0')}';
+  return '${m ~/ 1440}d ${(m % 1440) ~/ 60}h';
+}
+
+const _exitNames = {
+  'tp':     'target',
+  'sl':     'stop',
+  'trail':  'trail / BE stop',
+  'manual': 'closed',
+  // moitié fermée à +1R, puis le reste (2026-09-28)
+  'half+tp':     'half at +1R · rest at target',
+  'half+trail':  'half at +1R · rest at entry stop',
+  'half+sl':     'half at +1R · rest stopped',
+  'half+manual': 'half at +1R · rest closed',
+};
+
 class ScalpScreen extends ConsumerStatefulWidget {
   const ScalpScreen({super.key});
   @override
@@ -16,6 +56,7 @@ class ScalpScreen extends ConsumerStatefulWidget {
 class _ScalpScreenState extends ConsumerState<ScalpScreen> {
   bool _settingsExpanded = true;
   bool _lotsExpanded     = true;
+  bool _signalsExpanded  = false;   // journal des signaux : replié par défaut
 
   @override
   void initState() {
@@ -43,6 +84,8 @@ class _ScalpScreenState extends ConsumerState<ScalpScreen> {
               const Text('⚡ Scalping Bot', style: TextStyle(
                 color: AppColors.primary, fontWeight: FontWeight.bold, fontSize: 16)),
               const Spacer(),
+              Text(_updatedLabel(s.updatedAt),
+                style: const TextStyle(color: AppColors.textHint, fontSize: 10)),
               IconButton(
                 icon: const Icon(Icons.refresh, color: AppColors.textSecondary, size: 20),
                 onPressed: ntf.refreshStatus,
@@ -63,6 +106,11 @@ class _ScalpScreenState extends ConsumerState<ScalpScreen> {
                 ),
                 child: Text(s.error!, style: const TextStyle(color: AppColors.error, fontSize: 12)),
               ),
+
+            // ── Résultats, positions ouvertes (comme l'onglet Vol. Profile) ──
+            const SizedBox(height: 12),
+            const _ScalpResultsCard(),
+            const _ScalpOpenCard(),
 
             // ── Settings ──────────────────────────────────────────────────
             const SizedBox(height: 12),
@@ -106,7 +154,7 @@ class _ScalpScreenState extends ConsumerState<ScalpScreen> {
                   }
                 },
                 icon: const Icon(Icons.save),
-                label: const Text('Apply Settings'),
+                label: Text(s.dirty ? 'Apply Settings (unsaved changes)' : 'Apply Settings'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: AppColors.primary,
                   foregroundColor: AppColors.background,
@@ -116,8 +164,20 @@ class _ScalpScreenState extends ConsumerState<ScalpScreen> {
             ),
             const SizedBox(height: 16),
 
-            // ── Scalping history ──────────────────────────────────────────
-            _ScalpHistoryCard(),
+            // ── Trades clôturés (historique MT5) ──────────────────────────
+            const _ScalpTradesCard(),
+            const SizedBox(height: 16),
+
+            // ── Journal des signaux (ancien "Scalping History") ───────────
+            _SectionHeader(
+              title: '🧾 Signal log (what the bot evaluated)',
+              expanded: _signalsExpanded,
+              onTap: () => setState(() => _signalsExpanded = !_signalsExpanded),
+            ),
+            if (_signalsExpanded) ...[
+              const SizedBox(height: 8),
+              const _ScalpHistoryCard(),
+            ],
             const SizedBox(height: 24),
           ]),
         ),
@@ -263,6 +323,31 @@ class _SettingsCard extends StatelessWidget {
           color: AppColors.success,
           onChanged: ntf.setRisk,
         ),
+
+        // Max risk per trade — comme dans l'onglet Vol. Profile
+        _SliderRow(
+          label: 'Max risk per trade',
+          value: (s.riskCapPct ?? 15).clamp(1, 50).toDouble(),
+          min: 1, max: 50, divisions: 49,
+          display: s.riskCapPct == null
+              ? 'default'
+              : '${s.riskCapPct!.toStringAsFixed(0)}% of balance',
+          color: AppColors.warning,
+          onChanged: ntf.setRiskCap,
+        ),
+        Row(children: [
+          Expanded(child: Text(
+            s.riskCapPct == null
+                ? 'Default: 15% for crypto & metals, 7% for forex. Move the slider to use one cap for every symbol.'
+                : 'A trade whose stop would lose more than this is skipped — market and limit entries.',
+            style: const TextStyle(color: AppColors.textHint, fontSize: 10))),
+          if (s.riskCapPct != null)
+            TextButton(
+              onPressed: ntf.resetRiskCap,
+              child: const Text('Use defaults', style: TextStyle(fontSize: 11)),
+            ),
+        ]),
+        const SizedBox(height: 8),
 
         // Min Score
         _SliderRow(
@@ -476,7 +561,215 @@ class _LotSizesCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Scalping history
+// Results by symbol, open positions, closed trades — read from MT5's own
+// history (magic 234000), laid out like the Vol. Profile tab.
+// ─────────────────────────────────────────────────────────────────────────────
+
+String _px(Object? v) {
+  final n = (v as num?) ?? 0;
+  return n >= 1000 ? n.toStringAsFixed(2) : (n >= 10 ? n.toStringAsFixed(3) : n.toStringAsFixed(5));
+}
+
+List<Map<String, dynamic>> _rows(Object? list) => ((list as List?) ?? const [])
+    .map((e) => (e as Map).cast<String, dynamic>()).toList();
+
+class _Card extends StatelessWidget {
+  final String title;
+  final Widget child;
+  const _Card({required this.title, required this.child});
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(16),
+    decoration: BoxDecoration(
+      color: AppColors.cardBackground,
+      borderRadius: BorderRadius.circular(12),
+    ),
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(title, style: const TextStyle(
+        color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 15)),
+      const SizedBox(height: 8),
+      child,
+    ]),
+  );
+}
+
+class _ScalpResultsCard extends ConsumerWidget {
+  const _ScalpResultsCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final data  = ref.watch(scalpTradesProvider).valueOrNull;
+    final all   = (data?['all'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
+    final bySym = (data?['by_symbol'] as Map?)?.cast<String, dynamic>() ?? const <String, dynamic>{};
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: _Card(
+        title: '🎯 Results by symbol (30 days)',
+        child: data == null
+          ? const Center(child: CircularProgressIndicator())
+          : Column(children: [
+              _resultRow('All symbols', all, bold: true),
+              const Divider(color: AppColors.surface, height: 12),
+              for (final e in bySym.entries)
+                _resultRow(_sym(e.key), (e.value as Map).cast<String, dynamic>()),
+              if (bySym.isEmpty)
+                const Text('No closed scalping trade in the last 30 days',
+                  style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+            ]),
+      ),
+    );
+  }
+
+  Widget _resultRow(String name, Map<String, dynamic> d, {bool bold = false}) {
+    final n   = (d['trades'] as num?) ?? 0;
+    final net = (d['net_profit'] as num?) ?? 0;
+    final wr  = d['win_rate'] as num?;
+    final w   = bold ? FontWeight.bold : FontWeight.normal;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(children: [
+        Expanded(child: Text(name,
+          style: TextStyle(color: AppColors.textPrimary, fontSize: 13, fontWeight: w))),
+        SizedBox(width: 56, child: Text('$n tr', textAlign: TextAlign.right,
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 12))),
+        SizedBox(width: 52, child: Text(wr == null ? '—' : '${wr.toStringAsFixed(0)}%',
+          textAlign: TextAlign.right,
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 12))),
+        SizedBox(width: 80, child: Text(n == 0 ? '—' : _money(net), textAlign: TextAlign.right,
+          style: TextStyle(
+            color: n == 0 ? AppColors.textSecondary
+                 : (net >= 0 ? AppColors.success : AppColors.error),
+            fontWeight: FontWeight.bold, fontSize: 12))),
+      ]),
+    );
+  }
+}
+
+class _ScalpOpenCard extends ConsumerWidget {
+  const _ScalpOpenCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final data = ref.watch(scalpPositionsProvider).valueOrNull;
+    final pos  = _rows(data?['positions']);
+    final pend = _rows(data?['pending']);
+    if (pos.isEmpty && pend.isEmpty) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: _Card(
+        title: '📂 Open scalping positions',
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          for (final p in pos) _position(p),
+          if (pend.isNotEmpty) ...[
+            if (pos.isNotEmpty) const Divider(color: AppColors.surface, height: 16),
+            const Text('Waiting limit orders',
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 11,
+                fontWeight: FontWeight.w600)),
+            for (final o in pend) _pending(o),
+          ],
+        ]),
+      ),
+    );
+  }
+
+  Widget _position(Map<String, dynamic> p) {
+    final profit = (p['profit'] as num?) ?? 0;
+    final atSl   = p['at_sl'] as num?;
+    final side   = (p['side'] as String? ?? '').toUpperCase();
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(children: [
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('${_sym(p['symbol'])} $side ${p['volume']}'
+                '${(p['comment'] as String? ?? '').startsWith('CryptoOracle-P') ? '  · limit entry' : ''}',
+              style: TextStyle(
+                color: side == 'BUY' ? AppColors.success : AppColors.error,
+                fontWeight: FontWeight.bold, fontSize: 13)),
+            Text('entry ${_px(p['entry'])} · SL ${_px(p['sl'])} · TP ${_px(p['tp'])}',
+              style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+            if (atSl != null)
+              Text(atSl >= 0 ? 'stop locks ${_money(atSl)}' : 'risk at stop ${_money(atSl)}',
+                style: TextStyle(
+                  color: atSl >= 0 ? AppColors.success : AppColors.textHint, fontSize: 11)),
+          ]),
+        ),
+        Text(_money(profit), style: TextStyle(
+          color: profit >= 0 ? AppColors.success : AppColors.error,
+          fontWeight: FontWeight.bold, fontSize: 13)),
+      ]),
+    );
+  }
+
+  Widget _pending(Map<String, dynamic> o) => Padding(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    child: Row(children: [
+      Expanded(child: Text(
+        '${_sym(o['symbol'])} ${(o['side'] as String? ?? '').toUpperCase()} LIMIT '
+        '${o['volume']} @ ${_px(o['price'])}\nSL ${_px(o['sl'])} · TP ${_px(o['tp'])}',
+        style: const TextStyle(color: AppColors.textPrimary, fontSize: 12))),
+      Text('since ${_localTime(o['placed'] as String?)}',
+        style: const TextStyle(color: AppColors.textHint, fontSize: 10)),
+    ]),
+  );
+}
+
+class _ScalpTradesCard extends ConsumerWidget {
+  const _ScalpTradesCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final async = ref.watch(scalpTradesProvider);
+    return _Card(
+      title: '📜 Scalping trades',
+      child: async.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => Text('Error: $e', style: const TextStyle(color: AppColors.error)),
+        data: (d) {
+          final list = _rows(d['trades']);
+          if (list.isEmpty) {
+            return Text(d['error'] == true ? 'Bot unreachable' : 'No closed scalping trade yet',
+              style: const TextStyle(color: AppColors.textSecondary));
+          }
+          return Column(children: [
+            for (final t in list) _trade(t),
+          ]);
+        },
+      ),
+    );
+  }
+
+  Widget _trade(Map<String, dynamic> t) {
+    final profit = (t['profit'] as num?) ?? 0;
+    final win    = profit > 0;
+    final exit   = _exitNames[t['exit']] ?? t['exit'] ?? '';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(children: [
+        Icon(win ? Icons.check_circle : Icons.cancel,
+          color: win ? AppColors.success : AppColors.error, size: 14),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text('${_sym(t['symbol'])} ${(t['direction'] as String? ?? '').toUpperCase()}'
+                '  ·  $exit${t['pending_entry'] == true ? '  ·  limit entry' : ''}',
+              style: const TextStyle(color: AppColors.textPrimary, fontSize: 13)),
+            Text('${_localTime(t['closed'] as String?)}  ·  held ${_duration((t['minutes'] as num?) ?? 0)}',
+              style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+          ]),
+        ),
+        Text(_money(profit), style: TextStyle(
+          color: win ? AppColors.success : AppColors.error,
+          fontWeight: FontWeight.bold, fontSize: 13)),
+      ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Signal log (formerly "Scalping History") — what the bot evaluated, not trades
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _ScalpHistoryCard extends ConsumerWidget {
@@ -492,8 +785,8 @@ class _ScalpHistoryCard extends ConsumerWidget {
         borderRadius: BorderRadius.circular(12),
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Text('📜 Scalping History',
-          style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold, fontSize: 15)),
+        const Text('Latest signals — setups found, not closed trades',
+          style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
         const SizedBox(height: 8),
         history.when(
           loading: () => const Center(child: CircularProgressIndicator()),

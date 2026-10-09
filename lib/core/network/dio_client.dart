@@ -1,20 +1,38 @@
 import 'package:dio/dio.dart';
-import '../constants/api_constants.dart';
+import '../config/api_config.dart';
 import '../errors/app_exceptions.dart';
 import '../storage/secure_storage.dart';
 
 class DioClient {
   DioClient._();
 
-  // Single instance used across the whole app
-  static final Dio _dio = _createDio();
+  // Single instance used across the whole app.
+  //
+  // Was `static final`, i.e. built once on first access and pinned to the
+  // compile-time URL for the process lifetime. Changing the backend address
+  // at runtime therefore had no effect on it. It is now rebuilt on demand
+  // whenever the configured URL changes.
+  static Dio? _dio;
+  static String? _dioBuiltFor;
 
-  static Dio get instance => _dio;
+  static Dio get instance {
+    if (_dio == null || _dioBuiltFor != ApiConfig.baseUrl) {
+      _dio = _createDio();
+      _dioBuiltFor = ApiConfig.baseUrl;
+    }
+    return _dio!;
+  }
+
+  /// Force the shared client to be rebuilt — call after changing the URL.
+  static void reset() {
+    _dio = null;
+    _dioBuiltFor = null;
+  }
 
   static Dio _createDio() {
     final dio = Dio(
       BaseOptions(
-        baseUrl: ApiConstants.baseUrl,
+        baseUrl: ApiConfig.baseUrl,
         connectTimeout: const Duration(seconds: 10),
         receiveTimeout: const Duration(seconds: 10),
         headers: _ngrokHeaders,
@@ -39,7 +57,7 @@ class DioClient {
     Duration timeout = const Duration(seconds: 15),
   }) {
     return Dio(BaseOptions(
-      baseUrl: baseUrl ?? ApiConstants.baseUrl,
+      baseUrl: baseUrl ?? ApiConfig.baseUrl,
       connectTimeout: timeout,
       receiveTimeout: timeout,
       headers: _ngrokHeaders,

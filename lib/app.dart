@@ -1,8 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'core/config/refresh_config.dart';
 import 'core/constants/app_colors.dart';
 import 'features/auth/providers/auth_provider.dart';
+import 'features/bot/providers/bot_provider.dart';
+import 'features/bot/providers/scalp_provider.dart';
+import 'features/bot/providers/vp_provider.dart';
+import 'features/dashboard/providers/market_provider.dart';
 import 'features/auth/screens/login_screen.dart';
 import 'features/auth/screens/register_screen.dart';
 import 'features/dashboard/screens/dashboard_screen.dart';
@@ -54,6 +61,30 @@ class MainShell extends ConsumerStatefulWidget {
 class _MainShellState extends ConsumerState<MainShell> {
   int _index = 0;
   final _screens = const [DashboardScreen(), SmcScreen(), BotScreen()];
+  Timer? _autoRefresh;
+
+  @override
+  void initState() {
+    super.initState();
+    _autoRefresh = Timer.periodic(autoRefreshInterval, (_) => _refreshAll());
+  }
+
+  @override
+  void dispose() {
+    _autoRefresh?.cancel();
+    super.dispose();
+  }
+
+  // Lecture seule : rien ici ne démarre, n'arrête ni ne modifie un bot. Les
+  // saisies de réglages non enregistrées sont conservées par les providers.
+  void _refreshAll() {
+    if (!mounted) return;
+    ref.read(scalpProvider.notifier).refreshStatus();
+    ref.read(vpProvider.notifier).refresh();
+    ref.read(botProvider.notifier).refreshAccount();
+    if (_index == 0) ref.invalidate(marketsProvider);   // prix CoinGecko : écran visible seulement
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(

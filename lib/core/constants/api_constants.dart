@@ -2,16 +2,33 @@ class ApiConstants {
   ApiConstants._();
 
   // ───  FastAPI Backend ───────────────────────────────────────────────
-  // Account 1 — Cloudflare quick tunnel (replaces ngrok, no monthly request cap).
-  // NOTE: quick tunnel URLs change if the tunnel process restarts — update here
-  // when that happens. For a URL that never changes, switch to a named tunnel.
-  static const String baseUrl   = 'https://striking-opt-bridal-going.trycloudflare.com';
+  // DEFAULT ONLY. The live value is ApiConfig.baseUrl, which is loaded from
+  // device storage at startup and editable from the login screen — so a
+  // changed address no longer needs a code edit and a rebuild.
+  //
+  // Default is this PC's TAILSCALE address — permanent, works from anywhere
+  // (home wifi, mobile data), and private: the tailnet is not the public
+  // internet, which matters because /trading/* has no authentication.
+  //
+  // Replaces the Cloudflare quick tunnel, whose URL was regenerated on every
+  // restart (the recurring DioException) and which published the trading API
+  // openly.
+  //
+  // Tailscale device: DESKTOP-49MO79I
+  //   100.89.32.70                          <- used here, no DNS dependency
+  //   desktop-49mo79i                       (MagicDNS short name)
+  //   desktop-49mo79i.tailfced0b.ts.net     (MagicDNS FQDN)
+  // The IP is fixed for the lifetime of the device in the tailnet. All three
+  // were verified reachable. Fall back to http://192.168.0.129:8000 for plain
+  // home-wifi use with Tailscale off.
+  static const String baseUrl   = 'http://100.89.32.70:8000';
 
   // ─── Multi-account support ───────────────────────────────────────────────
-  // Add/remove accounts here.
+  // Account 1 tracks ApiConfig.baseUrl (see accountsResolved in ApiConfig
+  // consumers). Extra accounts are still declared here.
   static const List<Map<String, String>> accounts = [
-    {'name': 'Compte 1', 'url': 'https://striking-opt-bridal-going.trycloudflare.com'},
-    // Compte 2 disabled — re-enable with a second tunnel when needed
+    {'name': 'Compte 1', 'url': baseUrl},
+    // Compte 2 disabled — re-enable with a second backend when needed
   ];
 
   // Auth

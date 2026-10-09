@@ -40,17 +40,27 @@ class BotState {
 }
 
 class BotNotifier extends StateNotifier<BotState> {
-  final _dio = DioClient.create();
+  // Getter : suit l'adresse du backend si elle change dans l'app.
+  dynamic get _dio => DioClient.create();
   BotNotifier() : super(const BotState()) {
-    _connectMT5();
+    refreshAccount();
   }
 
-  Future<void> _connectMT5() async {
+  /// Solde / equity — au démarrage puis toutes les 30 s (MainShell).
+  /// /trading/account est en lecture seule ; /trading/connect refait un login
+  /// MT5 à chaque appel, il ne sert plus que de secours (ancien backend).
+  Future<void> refreshAccount() async {
     try {
-      final response = await _dio.get('/trading/connect');
+      final response = await _dio.get('/trading/account');
       state = state.copyWith(account: response.data['account']);
-    } catch (e) {
-      state = state.copyWith(error: e.toString());
+    } catch (_) {
+      if (state.account != null) return;          // on garde le dernier solde affiché
+      try {
+        final response = await _dio.get('/trading/connect');
+        state = state.copyWith(account: response.data['account']);
+      } catch (e) {
+        state = state.copyWith(error: e.toString());
+      }
     }
   }
 
