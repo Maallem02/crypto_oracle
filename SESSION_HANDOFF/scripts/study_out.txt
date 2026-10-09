@@ -1,0 +1,217 @@
+﻿PERIOD 24/09 18:59 -> 05/10 14:16 UTC (10 days)
+balance at start 180.78 | now 75.67 | cash moves -31.05 | closed trading P/L -74.06 | commission+swap +0.00
+highest closed balance 218.99 on Fri 02/10 04:32
+
+=== PER BOT ===
+  SMC                                 27 tr  WR  41%  net   -38.09  avg W  +8.82 L  -8.45  PF 0.72  avgR -0.15  sumR -3.9
+      max drawdown (closed) -52.01   longest losing streak 6   avg risk/trade $8.04 = 5.3% of balance
+  VP                                  31 tr  WR  32%  net   -35.97  avg W +20.64 L -11.54  PF 0.85  avgR -0.12  sumR -3.7
+      max drawdown (closed) -82.65   longest losing streak 6   avg risk/trade $11.46 = 6.7% of balance
+
+=== PER DAY (UTC) ===
+  Fri 25/09  total   +0.00   SMC   +7.29 (1/1)   VP   -7.29 (1/4)
+  Sun 27/09  total  -31.16   SMC   +1.19 (1/2)   VP  -32.35 (1/5)
+  Mon 28/09  total  +15.41   SMC  -15.35 (0/2)   VP  +30.76 (2/5)
+  Tue 29/09  total   +4.83   SMC   -7.50 (0/1)   VP  +12.33 (2/4)
+  Wed 30/09  total   -4.40   SMC   -4.11 (3/5)   VP   -0.29 (1/2)
+  Thu 01/10  total  +18.62   SMC  +13.75 (2/4)   VP   +4.87 (1/2)
+  Fri 02/10  total  -47.78   SMC   -6.03 (2/5)   VP  -41.75 (1/6)
+  Sat 03/10  total   -6.61   SMC   -6.61 (0/1)
+  Sun 04/10  total   +1.36   VP   +1.36 (1/2)
+  Mon 05/10  total  -24.33   SMC  -20.72 (2/6)   VP   -3.61 (0/1)
+
+=== SMC BREAKDOWN ===
+  era: after half@1R                  19 tr  WR  37%  net   -33.12  avg W  +9.77 L  -8.46  PF 0.67  avgR -0.14  sumR -2.7
+  era: before half@1R                  8 tr  WR  50%  net    -4.97  avg W  +7.17 L  -8.41  PF 0.85  avgR -0.16  sumR -1.3
+
+  symbol: BTCUSD                      19 tr  WR  47%  net   +13.26  avg W  +9.76 L  -7.46  PF 1.18  avgR +0.06  sumR +1.1
+  symbol: ETHUSD                       8 tr  WR  25%  net   -51.35  avg W  +4.62 L -10.10  PF 0.15  avgR -0.64  sumR -5.1
+
+  direction: buy                      18 tr  WR  50%  net   +24.07  avg W  +9.69 L  -7.01  PF 1.38  avgR +0.10  sumR +1.8
+  direction: sell                      9 tr  WR  22%  net   -62.16  avg W  +4.93 L -10.29  PF 0.14  avgR -0.64  sumR -5.7
+
+  setup: limit                         8 tr  WR  50%  net    -2.29  avg W  +5.97 L  -6.54  PF 0.91  avgR -0.19  sumR -1.5
+  setup: market                       19 tr  WR  37%  net   -35.80  avg W +10.46 L  -9.08  PF 0.67  avgR -0.13  sumR -2.4
+
+  exit: half@1R+BE stop                5 tr  WR 100%  net   +17.42  avg W  +3.48 L  +0.00  PF  inf  avgR +0.55  sumR +2.8
+  exit: half@1R+target                 4 tr  WR 100%  net   +60.37  avg W +15.09 L  +0.00  PF  inf  avgR +1.94  sumR +7.7
+  exit: stop                          16 tr  WR   0%  net  -135.15  avg W  +0.00 L  -8.45  PF 0.00  avgR -1.02  sumR -16.3
+  exit: trail/BE stop                  2 tr  WR 100%  net   +19.27  avg W  +9.63 L  +0.00  PF  inf  avgR +0.91  sumR +1.8
+
+  momentum: against 24h move           5 tr  WR  80%  net   +17.49  avg W  +9.82 L -21.78  PF 1.80  avgR +0.63  sumR +3.1
+  momentum: with 24h move             22 tr  WR  32%  net   -55.58  avg W  +8.26 L  -7.56  PF 0.51  avgR -0.32  sumR -7.1
+
+  hour UTC 00-06                       7 tr  WR  29%  net   -24.74  avg W  +5.08 L  -6.98  PF 0.29  avgR -0.38  sumR -2.6
+  hour UTC 06-12                       8 tr  WR  38%  net   -14.00  avg W  +7.59 L  -7.35  PF 0.62  avgR -0.24  sumR -1.9
+  hour UTC 12-18                       8 tr  WR  38%  net   -20.18  avg W +12.23 L -11.37  PF 0.65  avgR -0.20  sumR -1.6
+  hour UTC 18-24                       4 tr  WR  75%  net   +20.83  avg W  +9.15 L  -6.61  PF 4.15  avgR +0.56  sumR +2.2
+
+  BTCUSD buy                          14 tr  WR  50%  net   +30.25  avg W +11.14 L  -6.82  PF 1.63  avgR +0.19  sumR +2.7
+  BTCUSD sell                          5 tr  WR  40%  net   -16.99  avg W  +4.93 L  -8.95  PF 0.37  avgR -0.31  sumR -1.5
+  ETHUSD buy                           4 tr  WR  50%  net    -6.18  avg W  +4.62 L  -7.71  PF 0.60  avgR -0.23  sumR -0.9
+  ETHUSD sell                          4 tr  WR   0%  net   -45.17  avg W  +0.00 L -11.29  PF 0.00  avgR -1.04  sumR -4.2
+
+  losers: 16 | had been at >= +0.5R first: 4 | >= +1R: 2
+  winners: 11 | median best point +2.33R | median kept +0.88R
+  median hold: winners 246 min, losers 66 min
+  target distance: median 3.00R
+
+=== VP BREAKDOWN ===
+  era: A all setups, 2/symbol         14 tr  WR  29%  net    -8.88  avg W +21.86 L  -9.63  PF 0.91  avgR -0.17  sumR -2.4
+  era: B re-entry only, 1/symbol      15 tr  WR  40%  net   -22.25  avg W +19.83 L -15.69  PF 0.84  avgR +0.05  sumR +0.7
+  era: C + room filter, no XAG         2 tr  WR   0%  net    -4.84  avg W  +0.00 L  -2.42  PF 0.00  avgR -1.00  sumR -2.0
+
+  symbol: BTCUSD                       9 tr  WR  22%  net   -24.48  avg W +19.31 L  -9.01  PF 0.61  avgR -0.33  sumR -3.0
+  symbol: ETHUSD                       8 tr  WR  38%  net   -15.76  avg W  +8.90 L  -8.49  PF 0.63  avgR -0.13  sumR -1.1
+  symbol: USDJPY                       5 tr  WR  40%  net   +10.77  avg W +17.62 L  -8.15  PF 1.44  avgR +0.20  sumR +1.0
+  symbol: XAGUSD                       6 tr  WR  33%  net   -10.60  avg W +35.52 L -20.41  PF 0.87  avgR -0.07  sumR -0.4
+  symbol: XAUUSD                       3 tr  WR  33%  net    +4.10  avg W +34.81 L -15.36  PF 1.13  avgR -0.09  sumR -0.3
+
+  direction: buy                      15 tr  WR  40%  net    -0.89  avg W +19.02 L -12.78  PF 0.99  avgR +0.04  sumR +0.7
+  direction: sell                     16 tr  WR  25%  net   -35.08  avg W +23.08 L -10.62  PF 0.72  avgR -0.27  sumR -4.4
+
+  setup: None                          1 tr  WR   0%  net    -8.59  avg W  +0.00 L  -8.59  PF 0.00  avgR -1.00  sumR -1.0
+  setup: breakout                      4 tr  WR   0%  net   -49.11  avg W  +0.00 L -12.28  PF 0.00  avgR -1.11  sumR -4.4
+  setup: re-entry                     26 tr  WR  38%  net   +21.73  avg W +20.64 L -11.54  PF 1.12  avgR +0.07  sumR +1.7
+
+  exit: closed by you                  2 tr  WR  50%  net   -20.04  avg W  +2.59 L -22.63  PF 0.11  avgR -0.57  sumR -1.1
+  exit: stop                          20 tr  WR   0%  net  -219.75  avg W  +0.00 L -10.99  PF 0.00  avgR -1.03  sumR -20.6
+  exit: target                         9 tr  WR 100%  net  +203.82  avg W +22.65 L  +0.00  PF  inf  avgR +2.00  sumR +18.0
+
+  momentum: against 24h move          22 tr  WR  36%  net   +30.09  avg W +23.38 L -11.21  PF 1.19  avgR +0.09  sumR +2.0
+  momentum: with 24h move              9 tr  WR  22%  net   -66.06  avg W  +9.70 L -12.21  PF 0.23  avgR -0.64  sumR -5.7
+
+  hour UTC 00-06                      10 tr  WR  30%  net    -0.60  avg W +19.78 L  -8.56  PF 0.99  avgR -0.12  sumR -1.2
+  hour UTC 06-12                       8 tr  WR  25%  net   -28.63  avg W +25.41 L -13.24  PF 0.64  avgR -0.30  sumR -2.4
+  hour UTC 12-18                       5 tr  WR  40%  net    -8.35  avg W +15.55 L -13.15  PF 0.79  avgR -0.18  sumR -0.9
+  hour UTC 18-24                       8 tr  WR  38%  net    +1.61  avg W +21.72 L -12.71  PF 1.03  avgR +0.09  sumR +0.7
+
+  BTCUSD buy                           2 tr  WR  50%  net    -3.24  avg W +10.11 L -13.35  PF 0.76  avgR +0.50  sumR +1.0
+  BTCUSD sell                          7 tr  WR  14%  net   -21.24  avg W +28.51 L  -8.29  PF 0.57  avgR -0.57  sumR -4.0
+  ETHUSD buy                           5 tr  WR  40%  net    -6.78  avg W  +8.06 L  -7.63  PF 0.70  avgR -0.22  sumR -1.1
+  ETHUSD sell                          3 tr  WR  33%  net    -8.98  avg W +10.58 L  -9.78  PF 0.54  avgR +0.00  sumR +0.0
+  USDJPY buy                           3 tr  WR  33%  net    -4.04  avg W +16.81 L -10.43  PF 0.81  avgR -0.00  sumR -0.0
+  USDJPY sell                          2 tr  WR  50%  net   +14.81  avg W +18.42 L  -3.61  PF 5.10  avgR +0.51  sumR +1.0
+  XAGUSD buy                           4 tr  WR  50%  net   +35.80  avg W +35.52 L -17.62  PF 2.02  avgR +0.50  sumR +2.0
+  XAGUSD sell                          2 tr  WR   0%  net   -46.40  avg W  +0.00 L -23.20  PF 0.00  avgR -1.20  sumR -2.4
+  XAUUSD buy                           1 tr  WR   0%  net   -22.63  avg W  +0.00 L -22.63  PF 0.00  avgR -1.26  sumR -1.3
+  XAUUSD sell                          2 tr  WR  50%  net   +26.73  avg W +34.81 L  -8.08  PF 4.31  avgR +0.50  sumR +1.0
+
+  losers: 21 | had been at >= +0.5R first: 8 | >= +1R: 5
+  winners: 10 | median best point +2.03R | median kept +2.00R
+  median hold: winners 459 min, losers 88 min
+  target distance: median 2.00R
+
+=== SMC: TWO TRADES AT ONCE (BTC + ETH, same direction, entries < 30 min apart) ===
+  2 pairs: both lost 1, both won 1, split 0, net -7.58
+    05/10 03:57 buy BTCUSD -6.51 + ETHUSD -6.51
+    05/10 11:11 buy BTCUSD +2.66 + ETHUSD +2.78
+
+=== BOTH BOTS ON THE SAME SYMBOL AT THE SAME TIME ===
+  18 overlaps: same direction 8 (double risk), opposite 10 (hedged)
+    BTCUSD SMC sell +7.29 / VP buy -13.35  (25/09 16:25)
+    BTCUSD SMC sell +7.29 / VP sell +28.51  (25/09 13:35)
+    ETHUSD SMC sell -10.79 / VP buy +13.53  (26/09 21:00)
+    BTCUSD SMC buy +11.98 / VP buy -13.35  (25/09 17:08)
+    BTCUSD SMC buy +11.98 / VP sell +28.51  (25/09 17:08)
+    ETHUSD SMC sell -5.99 / VP sell -11.82  (28/09 05:11)
+    BTCUSD SMC sell -7.50 / VP sell -18.71  (29/09 16:50)
+    BTCUSD SMC buy +2.95 / VP sell -18.71  (29/09 19:45)
+    BTCUSD SMC sell +2.58 / VP sell -18.71  (30/09 02:15)
+    BTCUSD SMC sell -10.00 / VP sell -18.71  (30/09 08:17)
+    ETHUSD SMC buy +6.45 / VP buy +2.59  (29/09 21:26)
+    BTCUSD SMC buy +7.59 / VP sell -11.94  (01/10 02:30)
+    BTCUSD SMC buy -4.40 / VP sell -11.94  (01/10 06:05)
+    BTCUSD SMC buy -6.86 / VP sell -11.94  (01/10 07:34)
+    BTCUSD SMC buy +17.42 / VP sell -11.94  (01/10 13:14)
+    ETHUSD SMC sell -21.78 / VP buy +2.59  (30/09 16:00)
+    ETHUSD SMC buy -8.90 / VP buy +2.59  (02/10 04:57)
+    ETHUSD SMC sell -6.61 / VP buy +2.59  (02/10 19:57)
+
+=== MANAGEMENT REPLAY ON THE REAL TRADES (M1 from the actual fill, stop first on ties) ===
+  VP: 31 trades, actual $-35.97
+    fixed 2R (live rule)                       $  -11.01  (  -2.4R, 10/31 won)
+    2R + BE at +1R                             $  -57.54  (  -5.5R, 15/31 won)
+    half at +1R -> 2R                          $  -29.08  (  -3.2R, 15/31 won)
+    fixed 1.5R                                 $  +28.66  (  +1.5R, 13/31 won)
+    fixed 1R                                   $   -0.62  (  -1.0R, 15/31 won)
+    fixed 3R                                   $  -52.07  (  -5.4R, 7/31 won)
+  SMC: 27 trades, actual $-38.09
+    full to its target, no BE                  $  -70.51  (  -5.9R, 6/27 won)
+    half at +1R -> target (live since 30/09)   $  -35.87  (  -3.3R, 13/27 won)
+    BE at +1R -> target                        $  -53.15  (  -5.5R, 13/27 won)
+    fixed 1R                                   $  -18.58  (  -1.0R, 13/27 won)
+    fixed 1.5R                                 $   -6.90  (  +0.5R, 11/27 won)
+
+=== VP signals the room filter skipped (replayed at fixed 2R from the signal entry) ===
+  2026-10-02T14:30 XAGUSD  sell -> -0.13R
+  2026-10-02T15:00 XAGUSD  sell -> -1.0R
+  2026-10-02T19:15 XAGUSD  buy  -> 0.7R
+  2026-10-05T02:15 USDJPY  buy  -> 1.0R
+  2026-10-05T03:00 XAUUSD  sell -> -1.0R
+  2026-10-05T03:30 XAUUSD  buy  -> -1.0R
+  2026-10-05T06:15 USDJPY  sell -> -1.0R
+  2026-10-05T07:15 USDJPY  buy  -> -1.0R
+  2026-10-05T08:30 USDJPY  buy  -> 2.0R
+  2026-10-05T14:15 XAUUSD  buy  -> -0.11R
+  total -1.53R (positive = the filter cost money, negative = it saved money)
+
+=== EVERY TRADE ===
+  25/09 00:45 VP     BTCUSD  sell re-entry    -3.14 (-1.00R) best +0.26R  risk 1.7%      25m  stop  [against 24h move]
+  25/09 01:30 VP     BTCUSD  sell re-entry    -5.96 (-1.00R) best +0.38R  risk 3.4%      33m  stop  [against 24h move]
+  25/09 02:30 VP     ETHUSD  sell re-entry   +10.58 (+2.00R) best +2.03R  risk 3.1%     278m  target  [against 24h move]
+  25/09 02:45 VP     BTCUSD  sell re-entry    -8.77 (-1.00R) best +1.64R  risk 5.1%     501m  stop  [against 24h move]
+  25/09 13:35 SMC    BTCUSD  sell market      +7.29 (+0.88R) best +2.62R  risk 4.8%     180m  trail/BE stop  [against 24h move]
+  25/09 16:58 SMC    ETHUSD  sell market     -10.79 (-1.17R) best +1.03R  risk 5.1%    1974m  stop  [with 24h move]
+  26/09 21:00 VP     ETHUSD  buy  re-entry   +13.53 (+2.00R) best +2.14R  risk 3.7%     291m  target  [against 24h move]
+  25/09 17:08 SMC    BTCUSD  buy  limit      +11.98 (+0.95R) best +1.16R  risk 7.0%    1974m  trail/BE stop  [against 24h move]
+  27/09 02:00 VP     ETHUSD  buy  breakout    -6.92 (-1.19R) best +1.79R  risk 3.2%     749m  stop  [with 24h move]
+  27/09 06:32 VP     ETHUSD  buy              -8.59 (-1.00R) best +0.91R  risk 4.4%     477m  stop  [with 24h move]
+  25/09 19:00 VP     XAUUSD  buy  breakout   -22.63 (-1.26R) best +0.06R  risk 10.0%    3068m  closed by you  [with 24h move]
+  27/09 22:45 VP     ETHUSD  sell breakout    -7.74 (-1.00R) best +0.01R  risk 4.9%      40m  stop  [with 24h move]
+  25/09 18:00 VP     XAUUSD  sell re-entry   +34.81 (+2.00R) best +2.02R  risk 9.6%    3270m  target  [against 24h move]
+  25/09 16:25 VP     BTCUSD  buy  re-entry   -13.35 (-1.00R) best +1.77R  risk 7.7%    3542m  stop  [against 24h move]
+  25/09 12:00 VP     BTCUSD  sell re-entry   +28.51 (+2.00R) best +2.23R  risk 8.2%    3923m  target  [against 24h move]
+  28/09 05:11 SMC    ETHUSD  sell market      -5.99 (-1.00R) best +1.41R  risk 3.5%     365m  stop  [with 24h move]
+  28/09 11:54 SMC    BTCUSD  sell market      -9.36 (-1.00R) best -0.01R  risk 4.8%      12m  stop  [with 24h move]
+  28/09 01:15 VP     ETHUSD  sell breakout   -11.82 (-1.00R) best +1.32R  risk 6.4%     652m  stop  [with 24h move]
+  28/09 13:00 VP     ETHUSD  buy  re-entry    -7.39 (-1.00R) best +0.69R  risk 4.3%      88m  stop  [against 24h move]
+  29/09 01:15 VP     XAGUSD  buy  re-entry   -22.10 (-1.00R) best +0.00R  risk 13.4%     170m  stop  [against 24h move]
+  29/09 01:45 VP     BTCUSD  buy  re-entry   +10.11 (+2.00R) best +2.00R  risk 3.1%     258m  target  [against 24h move]
+  29/09 16:50 SMC    BTCUSD  sell market      -7.50 (-1.00R) best +0.33R  risk 4.9%      75m  stop  [with 24h move]
+  29/09 10:15 VP     XAGUSD  buy  re-entry   +32.40 (+2.00R) best +2.03R  risk 10.6%     626m  target  [against 24h move]
+  29/09 22:45 VP     XAUUSD  sell re-entry    -8.08 (-1.00R) best +0.05R  risk 4.5%      68m  stop  [against 24h move]
+  29/09 19:45 SMC    BTCUSD  buy  market      +2.95 (+0.55R) best +1.54R  risk 3.7%     273m  half@1R+BE stop  [with 24h move]
+  29/09 10:30 VP     USDJPY  sell re-entry   +18.42 (+2.02R) best +2.03R  risk 6.0%     890m  target  [against 24h move]
+  30/09 02:15 SMC    BTCUSD  sell market      +2.58 (+0.58R) best +1.33R  risk 2.3%     195m  half@1R+BE stop  [against 24h move]
+  30/09 08:17 SMC    BTCUSD  sell market     -10.00 (-1.00R) best +0.32R  risk 5.2%      75m  stop  [with 24h move]
+  29/09 15:00 VP     BTCUSD  sell re-entry   -18.71 (-1.00R) best +0.83R  risk 12.2%    1294m  stop  [against 24h move]
+  29/09 21:26 SMC    ETHUSD  buy  limit       +6.45 (+0.52R) best +2.33R  risk 7.0%    1017m  half@1R+BE stop  [with 24h move]
+  30/09 17:05 SMC    BTCUSD  buy  market      -6.09 (-1.00R) best +0.34R  risk 3.5%      21m  stop  [with 24h move]
+  30/09 22:15 VP     USDJPY  buy  re-entry   +16.81 (+2.00R) best +2.02R  risk 5.1%     160m  target  [with 24h move]
+  01/10 02:30 SMC    BTCUSD  buy  market      +7.59 (+1.77R) best +2.57R  risk 2.4%     137m  half@1R+target  [with 24h move]
+  01/10 06:05 SMC    BTCUSD  buy  market      -4.40 (-1.00R) best +0.44R  risk 2.3%      56m  stop  [with 24h move]
+  01/10 07:34 SMC    BTCUSD  buy  market      -6.86 (-1.00R) best +0.08R  risk 3.7%      58m  stop  [with 24h move]
+  30/09 18:30 VP     BTCUSD  sell re-entry   -11.94 (-1.00R) best +1.24R  risk 7.2%    1324m  stop  [against 24h move]
+  01/10 13:14 SMC    BTCUSD  buy  market     +17.42 (+1.74R) best +2.57R  risk 5.6%     246m  half@1R+target  [against 24h move]
+  30/09 16:00 SMC    ETHUSD  sell market     -21.78 (-1.00R) best +0.30R  risk 12.7%    2101m  stop  [against 24h move]
+  01/10 18:31 SMC    BTCUSD  buy  market     +18.04 (+2.18R) best +3.80R  risk 4.5%     589m  half@1R+target  [with 24h move]
+  02/10 02:15 VP     XAGUSD  buy  re-entry   +38.65 (+2.00R) best +2.08R  risk 10.5%     137m  target  [against 24h move]
+  02/10 04:57 SMC    ETHUSD  buy  market      -8.90 (-1.00R) best +0.04R  risk 4.1%      29m  stop  [with 24h move]
+  02/10 07:00 VP     USDJPY  buy  re-entry   -10.00 (-1.00R) best +0.26R  risk 4.7%      57m  stop  [against 24h move]
+  02/10 06:45 VP     XAGUSD  sell re-entry   -22.25 (-1.00R) best +0.09R  risk 10.6%      82m  stop  [against 24h move]
+  02/10 10:15 VP     XAGUSD  sell re-entry   -24.15 (-1.40R) best +0.48R  risk 9.4%     135m  stop  [with 24h move]
+  02/10 11:30 VP     USDJPY  buy  re-entry   -10.85 (-1.00R) best +0.02R  risk 5.9%      60m  stop  [against 24h move]
+  02/10 06:37 SMC    BTCUSD  buy  market     +17.32 (+2.06R) best +3.14R  risk 4.0%     354m  half@1R+target  [with 24h move]
+  02/10 12:55 SMC    BTCUSD  buy  market     -10.71 (-1.00R) best +0.60R  risk 6.7%      80m  stop  [with 24h move]
+  02/10 20:00 VP     XAGUSD  buy  re-entry   -13.15 (-1.00R) best -0.09R  risk 8.8%      38m  stop  [against 24h move]
+  02/10 19:57 SMC    ETHUSD  sell market      -6.61 (-1.00R) best +0.57R  risk 4.4%     295m  stop  [with 24h move]
+  04/10 04:15 VP     BTCUSD  sell re-entry    -1.23 (-1.01R) best +0.15R  risk 0.9%      80m  stop  [against 24h move]
+  28/09 16:30 VP     ETHUSD  buy  re-entry    +2.59 (+0.11R) best +1.72R  risk 14.4%    8803m  closed by you  [with 24h move]
+  05/10 02:07 SMC    BTCUSD  buy  limit       -7.00 (-1.00R) best +0.19R  risk 7.0%      76m  stop  [with 24h move]
+  05/10 03:51 SMC    ETHUSD  buy  limit       -6.51 (-1.00R) best -0.02R  risk 7.0%      25m  stop  [with 24h move]
+  05/10 03:57 SMC    BTCUSD  buy  limit       -6.51 (-1.00R) best +0.23R  risk 7.0%      20m  stop  [with 24h move]
+  05/10 08:37 SMC    BTCUSD  buy  limit       -6.14 (-1.10R) best +0.20R  risk 7.0%      35m  stop  [with 24h move]
+  05/10 09:15 VP     USDJPY  sell re-entry    -3.61 (-1.00R) best -0.02R  risk 4.9%      22m  stop  [with 24h move]
+  05/10 11:05 SMC    ETHUSD  buy  limit       +2.78 (+0.57R) best +1.17R  risk 7.0%      87m  half@1R+BE stop  [with 24h move]
+  05/10 11:11 SMC    BTCUSD  buy  limit       +2.66 (+0.54R) best +1.40R  risk 7.0%      83m  half@1R+BE stop  [with 24h move]

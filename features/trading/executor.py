@@ -3,6 +3,7 @@ import MetaTrader5 as mt5
 from datetime import datetime, timezone
 from features.trading.risk_manager import (
     calculate_lot_size, can_trade, get_daily_pnl_pct, compute_risk_based_entry, BOT_MAGIC,
+    VP_MAGIC,
 )
 
 # Symboles 24/7 — non concernés par les fenêtres rollover/ouverture forex
@@ -17,6 +18,66 @@ CRYPTO_SYMBOLS = {"BTC", "ETH", "SOL", "BNB", "XRP"}
 # limite tombe de 1.8xATR à 1.5xATR. Contrepartie : une série de 10 pertes
 # coûte 52% au lieu de 40%.
 MAX_RISK_PCT = 0.07
+
+# ── Plafond PAR SYMBOLE — 2026-09-15 (choix utilisateur) ────────────────────
+# Les métaux sont bloqués au lot minimum broker (0.01). Relever leur plafond
+# n'augmente donc PAS la taille de position — c'est impossible, 0.01 est le
+# plancher — cela laisse seulement passer des STOPS PLUS LARGES au lieu de les
+# refuser. Mesuré : l'or tourne à 1.19xATR de stop et l'argent à 1.11x, contre
+# 2.5x pour BTC/ETH, parce que le plafond 7% tronque les métaux et jamais le
+# crypto (leur plafond effectif est à 7.5-13xATR).
+#
+# CE QUE ÇA DÉBLOQUE (1160 rejets métaux depuis le 08-01) :
+#     XAU  cap 15%  ->  43% des signaux bloqués passent (médiane exigée : 19%)
+#     XAG  cap 15%  ->  21% des signaux bloqués passent (médiane exigée : 35%)
+#
+# CE QUE ÇA COÛTE — lire avant de monter encore :
+#     3 pertes métaux consécutives à 15% = 38.6% de drawdown, ce qui DÉCLENCHE
+#     le halt SURVIVAL à -35% et arrête tout le bot. À 33.7% de réussite
+#     mesurée sur les métaux, 3 pertes d'affilée arrivent dans 29% des cas
+#     (40% pour l'argent seul, WR 26.2%). À 7% il fallait 6 pertes, soit 8.5%.
+#
+# Et les trades métaux à stop large que ce plafond débloque appartiennent à la
+# pire cohorte mesurée : stop >1.75xATR = n=17, -75.83$, PF 0.52, contre
+# PF 0.84 pour la tranche 0.75-1.00xATR.
+#
+# Revenir à 7% = vider ce dict.
+#
+# ── BTC et ETH ajoutés à 15% le 2026-09-23 (choix utilisateur, compte RÉEL) ──
+# Passage sur le compte réel de 70$ : le plafond 7% vaut 4.90$, et TOUS les
+# setups crypto trouvés dans la première heure ont été refusés :
+#     ETH  lot 0.45 : risque 7.80$ - 9.60$ = 11-14% du solde
+#     BTC  lot 0.01 (lot MINIMUM broker, impossible de réduire) :
+#                     risque 5.12$ - 5.41$ = 7.3-7.7% — raté de 0.22-0.51$
+# L'utilisateur veut que le crypto trade quelle que soit la taille de lot, y
+# compris ETH à 0.45. 15% (=10.50$ sur 70$) laisse passer chacun de ces
+# setups, comme pour les métaux, tout en gardant un plafond : la suppression
+# totale rouvrirait l'incident du 08-12 (un seul trade or = -19.7% du compte).
+#
+# Ne concerne en pratique que les VENTES : les achats passent d'abord par
+# compute_risk_based_entry (target_risk_pct, 7% dans l'app) qui place une
+# limite plus proche du SL pour viser 7% ; seules les ventes vont au marché et
+# butent directement sur ce plafond.
+#
+# CE QUE ÇA COÛTE sur 70$ : jusqu'à ~10.50$ par trade crypto. Trois pertes
+# pleines d'affilée = -38.6% et déclenchent le halt SURVIVAL (-35%). BTC, ETH et
+# argent peuvent être ouverts en même temps : risque cumulé possible ~45% du
+# compte si les trois touchent leur stop ensemble.
+SYMBOL_RISK_PCT = {
+    "XAU": 0.15,
+    "XAG": 0.15,
+    "BTC": 0.15,
+    "ETH": 0.15,
+}
+
+
+def _risk_cap_for(symbol: str) -> float:
+    """Plafond de risque applicable à ce symbole (défaut MAX_RISK_PCT)."""
+    s = (symbol or "").upper()
+    for key, pct in SYMBOL_RISK_PCT.items():
+        if key in s:
+            return pct
+    return MAX_RISK_PCT
 
 def _mt5_init():
     """
@@ -58,37 +119,61 @@ def place_trade(
     risk_percent: float = 1.0,
     max_trades:   int   = 3,
     fixed_lot:    float = 0.0,   # 0 = auto (risk-based), >0 = lot manuel
+    magic:        int   = 234000,        # 234100 = stratégie Volume Profile
+    comment:      str | None = None,     # None = "CryptoOracle NN%"
+    risk_cap_pct: float | None = None,   # None = plafond par symbole (SYMBOL_RISK_PCT)
+    keep_sl:      bool  = False,         # True = SL structurel conservé (bot Volume Profile)
+    rr:           float | None = None,   # avec keep_sl : objectif = rr x risque réel
+    max_per_symbol: int = 1,             # bot Volume Profile seulement (réglage de l'app)
 ) -> dict:
 
     _mt5_init()
 
-    if not can_trade(max_trades):
+    # ── Deux stratégies, deux "bots" indépendants — 2026-09-24 ───────────────
+    # La stratégie Volume Profile (magic VP_MAGIC) fonctionne comme un second
+    # bot sur le même compte (demande utilisateur : "comme un autre bot, qui
+    # travaille séparément"). Chaque stratégie ne voit donc QUE ses propres
+    # positions dans les règles ci-dessous :
+    #   - SMC : règles INCHANGÉES (1 position par symbole, pas de BTC+ETH même
+    #           sens, max_trades), sauf qu'elles ignorent les positions VP ;
+    #           les positions manuelles continuent de compter, comme avant.
+    #   - VP  : max_per_symbol positions VP par symbole (réglage de l'app, 1 à 5
+    #           depuis le 2026-09-25), rien d'autre — ni les positions SMC, ni
+    #           les manuelles, ni la garde de corrélation, ni max_trades.
+    _is_vp = magic == VP_MAGIC
+
+    if not _is_vp and not can_trade(max_trades):
         return {"success": False, "reason": "Max trades reached"}
 
     mt5_symbol = SYMBOL_MAP.get(symbol.upper())
     if not mt5_symbol:
         return {"success": False, "reason": f"Symbol {symbol} not supported"}
 
-    # ── 1 position max par symbole ───────────────────────────────────────────
+    # ── 1 position max par symbole (par stratégie) ───────────────────────────
     # L'empilement même-sens ("averaging") a produit 4 paires perdantes
     # (ETH 07-09/07-10/07-11, USDJPY 07-13) : risque corrélé sans nouvel edge.
-    _existing = mt5.positions_get(symbol=mt5_symbol)
-    if _existing:
+    _on_symbol = mt5.positions_get(symbol=mt5_symbol) or []
+    _existing = ([p for p in _on_symbol if p.magic == VP_MAGIC] if _is_vp
+                 else [p for p in _on_symbol if p.magic != VP_MAGIC])
+    _max_here = max(1, int(max_per_symbol)) if _is_vp else 1
+    if len(_existing) >= _max_here:
         return {
             "success": False,
-            "reason": f"Position déjà ouverte sur {mt5_symbol} (max 1 par symbole)",
+            "reason": f"Position déjà ouverte sur {mt5_symbol} (max {_max_here} par symbole)",
         }
 
-    # ── Anti-concentration corrélée ───────────────────────────────────────────
+    # ── Anti-concentration corrélée (stratégie SMC uniquement) ──────────────
     # Mesuré sur 6 mois de returns 1h : BTC/ETH corrélés +0.90, XAU/XAG +0.83.
     # Ouvrir BTC-buy + ETH-buy = UN pari crypto en taille double, pas 2 trades
     # (c'est ce qui a amplifié la casse du 20/07). On bloque une 2e position
     # MÊME SENS dans une paire >0.8. Les corrélations négatives (EURUSD/USDJPY
     # -0.57) restent autorisées : même sens = hedge, ça réduit le risque.
     _CORR_GROUPS = [{"BTCUSDm", "ETHUSDm"}, {"XAUUSDm", "XAGUSDm"}]
-    _grp = next((g for g in _CORR_GROUPS if mt5_symbol in g), None)
+    _grp = None if _is_vp else next((g for g in _CORR_GROUPS if mt5_symbol in g), None)
     if _grp:
         for _p in (mt5.positions_get() or []):
+            if _p.magic == VP_MAGIC:
+                continue                      # les positions VP ne gênent pas SMC
             if _p.symbol in _grp and _p.symbol != mt5_symbol:
                 _p_dir = "buy" if _p.type == 0 else "sell"
                 if _p_dir == action:
@@ -149,8 +234,33 @@ def place_trade(
                 ),
             }
 
+    # ── SL STRUCTUREL (bot Volume Profile) — 2026-09-25 ──────────────────────
+    # Le décalage ci-dessous déplace le SL de la même distance que le prix a
+    # bougé entre la clôture de la bougie et l'ordre. Correct pour SMC (stop
+    # défini comme une distance), FAUX pour VP : son stop est un NIVEAU (au-delà
+    # du plus haut/bas de l'excursion, du POC, du repli). Constaté le 09-25 sur
+    # le 2e trade VP BTC : plus haut du swing 84782.13, stop placé à 84742.51 —
+    # 40 points DANS la structure, car le prix avait reculé de 60 points avant
+    # l'envoi. Avec keep_sl, le SL reste au niveau et l'objectif est recalculé
+    # à rr x le risque RÉEL depuis le prix d'exécution (2R restent 2R).
+    if keep_sl and original_risk > 0:
+        live_risk = (price - sl) if action == 'buy' else (sl - price)
+        if live_risk <= 0:
+            return {
+                "success": False,
+                "reason": f"Prix déjà au-delà du stop structurel (SL={sl} live={price})",
+            }
+        _rr = rr if rr else (original_reward / original_risk)
+        tp1 = round(price + _rr * live_risk, 5) if action == 'buy' \
+            else round(price - _rr * live_risk, 5)
+        sl = round(sl, 5)
+        print(
+            f"[STRUCT-SL] {symbol} {action} | signal_close={entry} live={price} | "
+            f"SL kept at {sl} (risk {live_risk:.5f}) TP={tp1} ({_rr:g}R)"
+        )
+
     # Recalculer SL/TP depuis le prix d'exécution → trade toujours "frais"
-    if original_risk > 0 and original_reward > 0:
+    elif original_risk > 0 and original_reward > 0:
         if action == 'buy':
             sl  = round(price - original_risk,   5)
             tp1 = round(price + original_reward, 5)
@@ -206,7 +316,8 @@ def place_trade(
     _acct = mt5.account_info()
     if _acct and _acct.balance > 0:
         point   = symbol_info.point
-        _max5   = _acct.balance * MAX_RISK_PCT
+        _cap_pct = risk_cap_pct if risk_cap_pct is not None else _risk_cap_for(mt5_symbol)
+        _max5   = _acct.balance * _cap_pct
         _max10  = _acct.balance * 0.10
         _cs     = symbol_info.trade_contract_size if symbol_info.trade_contract_size > 0 else 1.0
         _ts     = symbol_info.trade_tick_size      if symbol_info.trade_tick_size  > 0 else point
@@ -243,7 +354,7 @@ def place_trade(
                     "reason": (
                         f"Risque trop élevé pour {symbol}: lot {lot_size} risque "
                         f"${_est_loss:.2f} = {100*_est_loss/_acct.balance:.0f}% du solde "
-                        f"${_acct.balance:.2f} (plafond {100*MAX_RISK_PCT:.0f}%). "
+                        f"${_acct.balance:.2f} (plafond {100*_cap_pct:.0f}%). "
                         f"Stop {real_risk:.5g} trop large pour ce solde."
                     ),
                 }
@@ -303,8 +414,9 @@ def place_trade(
         "sl":           round(sl, 5),
         "tp":           round(tp1, 5),
         "deviation":    20,
-        "magic":        234000,
-        "comment":      f"CryptoOracle {confidence*100:.0f}%",
+        "magic":        magic,
+        # MT5 tronque au-delà de 31 caractères
+        "comment":      (comment or f"CryptoOracle {confidence*100:.0f}%")[:31],
         "type_filling": type_filling,
     }
 
@@ -365,6 +477,7 @@ def place_pending_trade(
     confidence:     float,
     fixed_lot:      float,
     expire_minutes: int = 30,   # cancel automatically if not filled in time
+    risk_cap_pct:   float | None = None,   # None = plafond par symbole (SYMBOL_RISK_PCT)
 ) -> dict:
     """
     Places a LIMIT order at entry_price instead of a market order, so a
@@ -385,7 +498,10 @@ def place_pending_trade(
     if not mt5_symbol:
         return {"success": False, "reason": f"Symbol {symbol} not supported"}
 
-    _existing = mt5.positions_get(symbol=mt5_symbol)
+    # Ordres limite = stratégie SMC uniquement. Les positions de la stratégie
+    # Volume Profile (VP_MAGIC) sont ignorées : les deux bots sont indépendants.
+    _existing = [p for p in (mt5.positions_get(symbol=mt5_symbol) or [])
+                 if p.magic != VP_MAGIC]
     if _existing:
         return {
             "success": False,
@@ -446,6 +562,54 @@ def place_pending_trade(
     else:
         sl_final  = max(sl, entry_price + min_dist)
         tp1_final = min(tp1, entry_price - min_dist)
+
+    # ── Plafond de risque MAX_RISK_PCT — AJOUTÉ le 2026-09-09 ───────────────
+    # Ce garde-fou existait dans place_trade() depuis le 2026-08-12 mais PAS
+    # ici. Les ordres en attente ne passaient donc par AUCUN contrôle de
+    # risque : seuls max_trades, le symbole et la présence de ticks étaient
+    # vérifiés.
+    #
+    # Conséquence mesurée sur la semaine du 09-07 : 8 trades sur 15 au-dessus
+    # du plafond de 7%, tous par la voie "pending", jusqu'à 10.0% du solde.
+    #     XAG 05:47  risque 9.87$  = 10.0%   -> perte  -8.35$
+    #     XAU 06:12  risque 9.51$  =  9.6%   -> perte  -9.51$
+    #     XAG 06:16  risque 8.71$  =  8.8%   -> perte  -8.70$
+    #     XAU 04:27  risque 9.09$  =  9.2%
+    # Pendant ce temps BTC (voie market, plafonnée) risquait 2.29$ = 2.3%.
+    #
+    # Effet : le même 1R valait 9.51$ sur l'or et 2.29$ sur BTC. La semaine
+    # a fait 60% de réussite — le meilleur taux de tout le test — et a QUAND
+    # MÊME perdu, parce que les gains moyens (+5.17$) étaient plus petits que
+    # les pertes moyennes (-7.91$). En R le profil était symétrique
+    # (+0.92R / -0.98R) : tout l'écart venait du dimensionnement.
+    #
+    # On refuse ici plutôt que de réduire le lot : le lot vient des réglages
+    # de l'app (lot fixe), et compute_risk_based_entry a déjà eu sa chance de
+    # rapprocher l'entrée du SL en amont. Si on arrive ici au-dessus du
+    # plafond, c'est que le symbole est trop gros pour le solde.
+    _acct = mt5.account_info()
+    if _acct and _acct.balance > 0:
+        _risk_dist = abs(entry_price - sl_final)
+        _cs = symbol_info.trade_contract_size if symbol_info.trade_contract_size > 0 else 1.0
+        _ts = symbol_info.trade_tick_size if symbol_info.trade_tick_size > 0 else point
+        _tv = symbol_info.trade_tick_value if symbol_info.trade_tick_value > 0 else 1.0
+        if mt5_symbol.upper().endswith(("USD", "USDM")):
+            _est_loss = lot_size * _cs * _risk_dist
+        else:
+            _est_loss = lot_size * (_risk_dist / _ts if _ts > 0 else 1) * _tv
+        # plafond réglé dans l'onglet Scalping de l'app, sinon celui du symbole
+        _cap_pct = risk_cap_pct if risk_cap_pct is not None else _risk_cap_for(mt5_symbol)
+        _cap = _acct.balance * _cap_pct
+        if _est_loss > _cap:
+            return {
+                "success": False,
+                "reason": (
+                    f"Risque trop élevé pour {symbol} (pending): lot {lot_size} "
+                    f"risque ${_est_loss:.2f} = {100*_est_loss/_acct.balance:.1f}% "
+                    f"du solde ${_acct.balance:.2f} (plafond "
+                    f"{100*_cap_pct:.0f}% = ${_cap:.2f})"
+                ),
+            }
 
     request = {
         "action":       mt5.TRADE_ACTION_PENDING,
@@ -627,6 +791,53 @@ def close_all_trades():
         results.append({"ticket": pos.ticket, "success": result.retcode == mt5.TRADE_RETCODE_DONE})
 
     return results
+
+
+def split_half_volume(symbol: str, volume: float) -> float | None:
+    """Moitié d'un lot, alignée sur le pas du broker, si les DEUX parts
+    respectent le lot minimum ; None sinon (ex. 0.01 lot au minimum broker :
+    impossible à couper)."""
+    si = mt5.symbol_info(symbol)
+    if si is None:
+        return None
+    step = si.volume_step or 0.01
+    half = round(int((volume / 2) / step + 1e-9) * step, 8)
+    rest = round(volume - half, 8)
+    if half < si.volume_min - 1e-9 or rest < si.volume_min - 1e-9:
+        return None
+    return half
+
+
+def close_partial(position, volume: float, comment: str) -> dict:
+    """Ferme `volume` lots d'une position ouverte, au marché (clôture
+    partielle, ou totale si volume = le volume restant)."""
+    _mt5_init()
+    si = mt5.symbol_info(position.symbol)
+    tick = mt5.symbol_info_tick(position.symbol)
+    if si is None or tick is None:
+        return {"success": False, "reason": "no symbol info / tick"}
+    buy = position.type == mt5.POSITION_TYPE_BUY
+    fm = si.filling_mode                       # même détection que place_trade (erreur 10030)
+    filling = (mt5.ORDER_FILLING_IOC if fm & 2 else
+               mt5.ORDER_FILLING_FOK if fm & 1 else mt5.ORDER_FILLING_RETURN)
+    result = mt5.order_send({
+        "action":       mt5.TRADE_ACTION_DEAL,
+        "symbol":       position.symbol,
+        "volume":       float(volume),
+        "type":         mt5.ORDER_TYPE_SELL if buy else mt5.ORDER_TYPE_BUY,
+        "position":     position.ticket,
+        "price":        tick.bid if buy else tick.ask,
+        "deviation":    20,
+        "magic":        position.magic,
+        "comment":      comment[:31],
+        "type_time":    mt5.ORDER_TIME_GTC,
+        "type_filling": filling,
+    })
+    if result is None:
+        return {"success": False, "reason": f"order_send returned None: {mt5.last_error()}"}
+    ok = result.retcode == mt5.TRADE_RETCODE_DONE
+    return {"success": ok, "retcode": result.retcode, "price": result.price,
+            "volume": result.volume, "reason": None if ok else (result.comment or f"code {result.retcode}")}
 
 
 def get_open_trades():

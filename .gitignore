@@ -46,3 +46,21 @@ gate_study_rows.csv
 .idea/
 *.swp
 *.swo
+
+# Watchdog runtime state — local to this machine, never shared
+watchdog.log
+watchdog_state.json
+watchdog.disabled
+
+# Persistent risk state (peak equity, daily window) — tied to one MT5 account
+features/trading/risk_state.json
+features/trading/risk_state.json.tmp
+
+# Volume Profile bot on/off state — machine-local
+features/volume_profile/vp_state.json
+
+# Binance public 1-minute history for the VP long-history study (regenerable download, ~150 MB)
+data/binance_1m/
+# VP gold/USDJPY Exness M5 study outputs (regenerable by vp_exness_m5_study.py)
+data/vp_exness_m5_*
+data/vp_gold_3y_*

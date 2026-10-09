@@ -1,0 +1,177 @@
+﻿320 SMC trades 31/07 -> 06/10   halves split 25/08
+actual: WR 42%  net -201.81$  PF 0.81  sum -25.5R  avg -0.080R
+
+=== 1. DIRECTION EDGE: does price go +1R before -1R? (50% = coin flip, spread makes it ~47-48%) ===
+  all       bot entries 46.2% (n=320)   same moment OPPOSITE direction 45.9%   random times same direction 47.2% (n=9600)
+  1st half  bot entries 45.0% (n=160)   same moment OPPOSITE direction 47.5%   random times same direction 46.8% (n=4800)
+  2nd half  bot entries 47.5% (n=160)   same moment OPPOSITE direction 44.4%   random times same direction 47.5% (n=4800)
+
+  price move after the entry, in R, in the trade's direction (mean +- 1 s.e.):
+    after 15m  -0.092 +- 0.054R  (n=320)   halves +0.025 / -0.210
+    after 1h   -0.054 +- 0.083R  (n=319)   halves +0.171 / -0.280
+    after 4h   +0.062 +- 0.183R  (n=316)   halves +0.734 / -0.610
+    after 24h  +0.428 +- 0.425R  (n=297)   halves +2.012 / -1.209
+
+=== 2. SAME ENTRIES, OTHER STOP / TARGET (mean R per trade; stop and target in the trade's own R) ===
+            target 0.5  target 1.0  target 1.5  target 2.0  target 3.0  
+  stop 0.5R  -0.144      -0.095      -0.184      -0.251      -0.189     
+  stop 1.0R  -0.098      -0.066      -0.067      -0.098      -0.053     
+  stop 1.5R  -0.068      -0.066      -0.062      -0.091      -0.024     
+  stop 2.0R  -0.057      -0.065      -0.029      -0.057      -0.008     
+  stop 3.0R  -0.052      -0.049      -0.031      -0.062      -0.029     
+  (each cell: average result divided by the stop size = R per unit of risk; >0 = profitable)
+
+=== 3. TRADES THAT HIT -1R BEFORE +1R: 172 ===
+  with a stop of 1.5R instead, 26/172 (15%) would have reached +1R first
+  with a stop of 2.0R instead, 42/172 (24%) would have reached +1R first
+  with a stop of 3.0R instead, 62/172 (36%) would have reached +1R first
+  winners' deepest dip before +1R... (whole trade MAE) median -1.29R
+  actual losers stopped within 1 h of the fill: 104/185
+  actual losers that never reached +0.5R: 51/185
+
+=== 4. WHAT SEPARATES GOOD ENTRIES FROM BAD ONES (+1R-first rate; overall 46.2%) ===
+
+  symbol
+    BTCUSD             n= 97  +1R-first 50.5%  (halves 47.4% / 52.5%)  actual   -4.7R
+    ETHUSD             n=109  +1R-first 51.4%  (halves 52.6% / 50.0%)  actual   +2.7R
+    EURUSD             n= 26  +1R-first 34.6%  (halves 36.0% /  0.0%)  actual   -7.7R
+    XAGUSD             n= 38  +1R-first 34.2%  (halves 30.8% / 36.0%)  actual   -5.9R  <- WORSE in both halves
+    XAUUSD             n= 45  +1R-first 46.7%  (halves 50.0% / 43.5%)  actual   -4.9R
+
+  direction
+    buy                n=216  +1R-first 47.2%  (halves 47.8% / 46.6%)  actual   -8.2R
+    sell               n=104  +1R-first 44.2%  (halves 38.3% / 49.1%)  actual  -17.4R
+
+  entry type
+    limit              n=113  +1R-first 45.1%  (halves 46.7% / 43.4%)  actual  -13.7R
+    market             n=207  +1R-first 46.9%  (halves 44.0% / 49.5%)  actual  -11.8R
+
+  signal timeframe
+    15m                n=120  +1R-first 41.7%  (halves 42.9% / 40.4%)  actual  -23.4R
+    30m                n= 43  +1R-first 44.2%  (halves 40.9% / 47.6%)  actual  -10.4R
+    5m                 n=157  +1R-first 50.3%  (halves 48.0% / 52.4%)  actual   +8.3R
+
+  move in the trade's direction over the previous 1 h (x ATR15)
+    < -1.00            n= 12  +1R-first 33.3%  (halves 25.0% / 37.5%)  actual   -4.6R
+    -1.00-0.00         n= 97  +1R-first 41.2%  (halves 37.3% / 45.7%)  actual  -21.8R
+    0.00-1.00          n=158  +1R-first 43.7%  (halves 42.5% / 44.7%)  actual  -13.7R
+    >= 1.00            n= 53  +1R-first 66.0%  (halves 65.6% / 66.7%)  actual  +14.6R  <- BETTER in both halves
+
+  move in the trade's direction over the previous 4 h (x ATR15)
+    < -2.00            n= 31  +1R-first 35.5%  (halves 38.9% / 30.8%)  actual   -9.5R  <- WORSE in both halves
+    -2.00-0.00         n= 78  +1R-first 41.0%  (halves 38.1% / 44.4%)  actual  -18.1R
+    0.00-2.00          n=102  +1R-first 50.0%  (halves 50.0% / 50.0%)  actual   -7.2R
+    >= 2.00            n=109  +1R-first 49.5%  (halves 48.1% / 50.9%)  actual   +9.3R
+
+  stretch from EMA50 15m, signed (x ATR15)
+    < -1.00            n= 42  +1R-first 33.3%  (halves 31.8% / 35.0%)  actual  -12.0R  <- WORSE in both halves
+    -1.00-0.00         n= 39  +1R-first 48.7%  (halves 50.0% / 47.6%)  actual   -8.6R
+    0.00-1.50          n=102  +1R-first 49.0%  (halves 51.1% / 47.3%)  actual   -4.2R
+    1.50-3.00          n= 79  +1R-first 49.4%  (halves 50.0% / 48.6%)  actual   +4.0R
+    >= 3.00            n= 58  +1R-first 44.8%  (halves 35.5% / 55.6%)  actual   -4.8R
+
+  place in the last 24 h range (0 = best price for the trade, 1 = worst)
+    < 0.33             n= 41  +1R-first 39.0%  (halves 29.4% / 45.8%)  actual  -12.0R
+    0.33-0.66          n= 87  +1R-first 44.8%  (halves 52.3% / 37.2%)  actual  -14.4R
+    >= 0.66            n=192  +1R-first 48.4%  (halves 44.4% / 52.7%)  actual   +0.9R
+
+  H1 EMA50 slope vs trade
+    against            n= 64  +1R-first 45.3%  (halves 47.8% / 43.9%)  actual   -4.5R
+    with               n=256  +1R-first 46.5%  (halves 44.5% / 48.7%)  actual  -21.0R
+
+  H4 EMA50 slope vs trade
+    against            n= 83  +1R-first 49.4%  (halves 41.9% / 53.8%)  actual   +3.5R
+    with               n=237  +1R-first 45.1%  (halves 45.7% / 44.4%)  actual  -29.0R
+
+  price vs H4 EMA50
+    against            n= 68  +1R-first 51.5%  (halves 36.0% / 60.5%)  actual   +2.4R
+    with               n=252  +1R-first 44.8%  (halves 46.7% / 42.7%)  actual  -27.9R
+
+  stop size (x ATR15)
+    < 1.50             n=180  +1R-first 44.4%  (halves 43.0% / 45.5%)  actual  -19.3R
+    1.50-2.50          n= 78  +1R-first 53.8%  (halves 54.1% / 53.7%)  actual   +4.6R  <- BETTER in both halves
+    2.50-3.50          n= 49  +1R-first 42.9%  (halves 40.6% / 47.1%)  actual   -7.5R
+    >= 3.50            n= 13  +1R-first 38.5%  (halves 41.7% /  0.0%)  actual   -3.2R
+
+  spread as share of 1R
+    < 0.03             n= 61  +1R-first 55.7%  (halves 61.5% / 54.2%)  actual   +2.1R  <- BETTER in both halves
+    0.03-0.06          n=136  +1R-first 44.1%  (halves 44.6% / 43.4%)  actual  -16.6R
+    0.06-0.10          n= 73  +1R-first 49.3%  (halves 47.6% / 51.6%)  actual   -2.0R
+    >= 0.10            n= 50  +1R-first 36.0%  (halves 31.8% / 39.3%)  actual   -9.0R  <- WORSE in both halves
+
+  how far into its candle the signal fired (0 = just opened, 1 = about to close)
+    < 0.33             n=171  +1R-first 46.8%  (halves 43.5% / 50.0%)  actual   -0.4R
+    0.33-0.66          n= 93  +1R-first 48.4%  (halves 54.8% / 43.1%)  actual  -14.6R
+    >= 0.66            n= 56  +1R-first 41.1%  (halves 36.4% / 47.8%)  actual  -10.5R
+
+  bot score
+    75.00-85.00        n= 14  +1R-first 14.3%  (halves  0.0% / 22.2%)  actual  -11.6R
+    >= 85.00           n=269  +1R-first 49.8%  (halves 48.2% / 51.5%)  actual   -3.0R
+
+  ADX
+    < 20.00            n= 69  +1R-first 49.3%  (halves 42.3% / 53.5%)  actual   -0.7R
+    20.00-30.00        n=100  +1R-first 54.0%  (halves 56.6% / 51.1%)  actual   +1.7R
+    >= 30.00           n=114  +1R-first 42.1%  (halves 39.7% / 45.1%)  actual  -15.6R
+
+  RSI
+    < 40.00            n= 23  +1R-first 56.5%  (halves 42.9% / 77.8%)  actual   -0.9R
+    40.00-50.00        n= 95  +1R-first 45.3%  (halves 41.9% / 48.1%)  actual  -11.3R
+    50.00-60.00        n=119  +1R-first 47.9%  (halves 48.3% / 47.5%)  actual   -8.8R
+    >= 60.00           n= 46  +1R-first 50.0%  (halves 51.9% / 47.4%)  actual   +6.4R
+
+  ATR ratio
+    < 0.80             n= 82  +1R-first 37.8%  (halves 22.2% / 50.0%)  actual  -12.5R
+    0.80-1.10          n=153  +1R-first 52.3%  (halves 52.6% / 51.9%)  actual   -2.4R
+    >= 1.10            n= 48  +1R-first 52.1%  (halves 60.0% / 38.9%)  actual   +0.3R
+
+  P/D position %
+    < 35.00            n= 74  +1R-first 51.4%  (halves 43.9% / 60.6%)  actual   -7.9R
+    35.00-50.00        n= 63  +1R-first 42.9%  (halves 46.7% / 39.4%)  actual   -6.5R
+    50.00-65.00        n= 76  +1R-first 48.7%  (halves 48.5% / 48.8%)  actual   +7.2R
+    >= 65.00           n= 70  +1R-first 48.6%  (halves 47.4% / 50.0%)  actual   -7.4R
+
+  HTF consensus
+    bearish            n= 26  +1R-first 42.3%  (halves 38.9% / 50.0%)  actual  -10.1R
+    bullish            n=152  +1R-first 54.6%  (halves 53.2% / 56.0%)  actual  +25.2R  <- BETTER in both halves
+    conflict           n=105  +1R-first 40.0%  (halves 38.3% / 41.4%)  actual  -29.6R
+
+  OB/FVG confluence
+    fvg                n= 28  +1R-first 35.7%  (halves 37.0% /  0.0%)  actual   -9.4R
+    order_block        n=248  +1R-first 50.4%  (halves 50.5% / 50.4%)  actual   +0.3R
+
+  structure
+    bearish            n= 92  +1R-first 47.8%  (halves 40.5% / 52.7%)  actual   -9.8R
+    bullish            n=184  +1R-first 49.5%  (halves 50.5% / 48.2%)  actual   +0.0R
+
+  LG strength
+    < 0.02             n= 87  +1R-first 39.1%  (halves 32.1% / 50.0%)  actual  -15.3R
+    0.02-0.05          n= 72  +1R-first 47.2%  (halves 44.4% / 50.0%)  actual   -7.4R
+    >= 0.05            n=124  +1R-first 54.8%  (halves 62.3% / 49.3%)  actual   +8.2R
+
+  volume ratio
+    < 0.80             n=105  +1R-first 41.0%  (halves 33.3% / 46.7%)  actual  -24.3R
+    0.80-1.20          n=128  +1R-first 52.3%  (halves 50.0% / 54.8%)  actual  +10.6R
+    >= 1.20            n= 50  +1R-first 52.0%  (halves 58.1% / 42.1%)  actual   -0.8R
+
+  hour UTC
+    0                  n= 78  +1R-first 44.9%  (halves 41.7% / 47.6%)  actual   -1.4R
+    12                 n=106  +1R-first 44.3%  (halves 46.7% / 41.3%)  actual  -21.6R
+    18                 n= 39  +1R-first 59.0%  (halves 57.1% / 60.0%)  actual   +2.1R  <- BETTER in both halves
+    6                  n= 97  +1R-first 44.3%  (halves 42.0% / 46.8%)  actual   -4.7R
+
+=== 5. THE SIGNAL CANDLE: the bot decides on a candle that is still forming ===
+  candle then closed FOR the trade:     n=149  +1R-first 51.0%  actual +7.8R
+  candle then closed AGAINST the trade: n=171  +1R-first 42.1%  actual -33.3R
+  signals fired in the first third of the candle: 171/320
+
+=== 6. LIMIT ORDERS: 113 filled, delay signal->fill median 34 min (>1 h: 42) ===
+  filled < 15 min    n= 29  +1R-first 44.8%  actual -3.4R
+  filled 15-120 min  n= 65  +1R-first 46.2%  actual +1.9R
+  filled > 2 h       n= 19  +1R-first 42.1%  actual -12.1R
+
+=== 7. TARGETS ===
+  target distance median 2.98R; trades whose path reached it within 24 h: 117/320
+  reached +1.0R (whole life of the trade): 72%
+  reached +1.5R (whole life of the trade): 62%
+  reached +2.0R (whole life of the trade): 53%
+  reached +3.0R (whole life of the trade): 42%

@@ -52,6 +52,7 @@ from features.market.router  import router as market_router
 from features.smc.router     import router as smc_router
 from features.trading.router import router as trading_router, auto_scan, scalp_auto_scan, manage_open_positions
 from features.zones.router   import router as zones_router
+from features.dashboard.router import router as dashboard_router
 
 app = FastAPI(
     title=f"CryptoOracle API [{runtime.instance}]",
@@ -119,6 +120,11 @@ def startup():
                       coalesce=True, misfire_grace_time=30)
     scheduler.add_job(manage_open_positions, 'interval', seconds=30, id='position_manager',
                       coalesce=True, misfire_grace_time=15)
+    # Bot Volume Profile : second bot indépendant du scan SMC, son propre
+    # minuteur et son propre marche/arrêt (features/volume_profile/runner.py)
+    from features.volume_profile.runner import vp_job
+    scheduler.add_job(vp_job,                'interval', minutes=1,  id='vp_scan',
+                      coalesce=True, misfire_grace_time=30)
     scheduler.add_job(_zone_weekly_retrain,  'cron',     day_of_week='sun', hour=2, minute=0,
                       id='zone_retrain',     coalesce=True, misfire_grace_time=3600)
     scheduler.start()
@@ -132,6 +138,7 @@ app.include_router(market_router)
 app.include_router(smc_router)
 app.include_router(trading_router)
 app.include_router(zones_router)
+app.include_router(dashboard_router)
 
 @app.get("/")
 def root():
@@ -147,6 +154,20 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok", "instance": runtime.instance}
+
+# ── App web (iPhone via Tailscale) servie par le backend lui-même ─────────────
+# http://<ip-tailscale>:8000/app/ — plus de serveur séparé sur le port 5500 à
+# lancer à la main (il ne tournait plus : écran blanc sur l'iPhone le
+# 2026-09-25). Même port que l'API, donc même règle de pare-feu, et gardée en
+# vie par le watchdog avec le reste. Build : flutter build web --base-href /app/
+from fastapi.staticfiles import StaticFiles
+_WEB_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "..", "crypto_oracle-main", "build", "web"))
+if os.path.isdir(_WEB_DIR):
+    app.mount("/app", StaticFiles(directory=_WEB_DIR, html=True), name="webapp")
+    print(f"[WEB] app web servie sur /app/ depuis {_WEB_DIR}")
+else:
+    print(f"[WEB] {_WEB_DIR} introuvable - app web non servie")
 
 
 if __name__ == "__main__":

@@ -37,6 +37,55 @@ API = "http://127.0.0.1:8000"
 alerts, warns = [], []
 
 
+def _realised_balance_peak(current_balance, days=120):
+    """Plus haut SOLDE réellement atteint DEPUIS LE DERNIER MOUVEMENT DE FONDS.
+
+    account_info() ne donne que le solde courant. On rejoue les deals à
+    l'envers depuis le solde actuel pour reconstruire la courbe, puis on prend
+    son maximum.
+
+    L'ancrage au dernier dépôt/retrait (type 2) est essentiel : sans lui, une
+    fenêtre de 60 jours sur ce compte d'essai remontait à une période où le
+    solde valait 4450$, et affichait un drawdown de 96.8% qui ne veut rien
+    dire. Ce qui compte est "depuis que j'ai remis de l'argent, où j'en suis" —
+    donc le pic est mesuré à partir du dernier mouvement de fonds.
+
+    Retourne (peak, depuis) ou (None, None) si l'historique est indisponible —
+    l'appelant retombe alors sur peak_equity seul plutôt que d'inventer un
+    chiffre.
+    """
+    try:
+        deals = mt5.history_deals_get(
+            datetime.now() - timedelta(days=days),
+            datetime.now() + timedelta(hours=6)) or []
+        moves = sorted([d for d in deals if d.type in (0, 1, 2)],
+                       key=lambda d: d.time)
+        if not moves:
+            return None, None
+
+        # Rejouer à l'envers depuis le solde actuel pour dater chaque point.
+        total = sum(d.profit + d.commission + d.swap for d in moves)
+        run = current_balance - total
+        curve = []
+        for d in moves:
+            run += d.profit + d.commission + d.swap
+            curve.append((d.time, run, d.type))
+
+        # Repartir du dernier mouvement de fonds (dépôt ou retrait).
+        last_funding = max((i for i, (_, _, t) in enumerate(curve) if t == 2),
+                           default=None)
+        if last_funding is not None:
+            era = curve[last_funding:]
+        else:
+            era = curve
+        if not era:
+            return None, None
+        peak = max(v for _, v, _ in era)
+        return peak, datetime.fromtimestamp(era[0][0])
+    except Exception:
+        return None, None
+
+
 def alert(msg):
     alerts.append(msg)
     print(f"  [ALERT] {msg}")
@@ -99,19 +148,73 @@ def main():
     else:
         warn("no scan recorded yet this session")
 
+    # ── second bot : Volume Profile (2026-09-24) ─────────────────────────────
+    # Indépendant du bot SMC : son propre marche/arrêt et son propre minuteur.
+    # Le Stop de l'app ne l'arrête PAS — d'où cette section séparée.
+    section("VOLUME PROFILE BOT (independent)")
+    try:
+        vp = requests.get(f"{API}/trading/vp/status", timeout=10).json()
+        age = vp.get("last_scan_age_min")
+        vs = vp.get("settings") or {}
+        print(f"  enabled={vp.get('enabled')}  symbols={vp.get('symbols')}  "
+              f"lots={vp.get('lot_sizes')}  risk cap {vp.get('risk_cap_pct')}%")
+        off = [k for k, v in (vs.get("setups") or {}).items() if not v]
+        print(f"  daily loss limit {vs.get('daily_loss_pct', 0) or 'OFF'}"
+              f"{'%' if vs.get('daily_loss_pct') else ''}   "
+              f"setups off: {', '.join(off) if off else 'none'}   (all set from the app)")
+        if vp.get("paused"):
+            warn(f"VP paused: {vp['paused']}")
+        if not vp.get("enabled"):
+            ok("stopped on purpose (POST /trading/vp/start to resume)")
+        elif age is None:
+            warn("enabled but no scan recorded yet")
+        elif age > 5:
+            alert(f"enabled but last scan was {age:.0f} min ago - VP job may be dead")
+        else:
+            ok(f"last scan {age:.1f} min ago")
+        if vp.get("last_error"):
+            warn(f"last VP error: {vp['last_error']}")
+    except Exception as e:
+        warn(f"VP status unreachable: {e}")
+
     # ── account ─────────────────────────────────────────────────────────────
     section("ACCOUNT")
     acc = mt5.account_info()
     peak = st.get("peak_equity") or (acc.equity if acc else 0)
     if acc:
         dd = 100 * (peak - acc.equity) / peak if peak else 0
-        print(f"  balance ${acc.balance:.2f}   equity ${acc.equity:.2f}   peak ${peak:.2f}")
-        if dd >= 35:
-            alert(f"drawdown {dd:.1f}% from peak - at or past the -35% halt")
-        elif dd >= 25:
-            warn(f"drawdown {dd:.1f}% from peak")
+        print(f"  balance ${acc.balance:.2f}   equity ${acc.equity:.2f}")
+
+        # Deux drawdowns différents, et les confondre induit en erreur.
+        #
+        # peak_equity est un pic d'equity INTRADAY : il inclut le profit
+        # flottant d'une position encore ouverte. Le 2026-09-15 il affichait
+        # 159.18$ alors que le solde n'avait jamais dépassé 151.13$ — l'écart
+        # venait d'un ETH en cours qui a ensuite rendu une partie. Résultat
+        # affiché : -11.0% au lieu du -6.3% réellement encaissé.
+        #
+        # On garde peak_equity pour l'ALERTE parce que c'est exactement la
+        # valeur que compare le halt SURVIVAL (router.py ~1722) : le seuil doit
+        # être jugé sur la même grandeur que celle qui le déclenche. Mais on
+        # affiche AUSSI le pic de solde réalisé, qui est ce que l'utilisateur
+        # a vraiment gagné puis perdu.
+        bal_peak, since = _realised_balance_peak(acc.balance)
+        if bal_peak:
+            bdd = 100 * (bal_peak - acc.balance) / bal_peak if bal_peak else 0
+            print(f"  peak equity  ${peak:8.2f}  intraday, flottant inclus "
+                  f"-> drawdown {dd:5.1f}%   [seuil du halt SURVIVAL]")
+            print(f"  peak balance ${bal_peak:8.2f}  réalisé depuis "
+                  f"{since:%m-%d %H:%M}   -> drawdown {bdd:5.1f}%   "
+                  f"[réellement encaissé]")
         else:
-            ok(f"drawdown {dd:.1f}% from peak")
+            print(f"  peak ${peak:.2f}")
+
+        if dd >= 35:
+            alert(f"drawdown {dd:.1f}% from peak equity - at or past the -35% halt")
+        elif dd >= 25:
+            warn(f"drawdown {dd:.1f}% from peak equity")
+        else:
+            ok(f"drawdown {dd:.1f}% from peak equity")
 
     # ── symbol coverage: THE lockout detector ───────────────────────────────
     section(f"SYMBOL COVERAGE (silence threshold {args.hours}h)")
@@ -182,12 +285,24 @@ def main():
 
     # ── open positions ──────────────────────────────────────────────────────
     section("OPEN POSITIONS")
-    positions = [p for p in (mt5.positions_get() or []) if p.magic == 234000]
+    # 234000 = stratégie SMC, 234100 = stratégie Volume Profile (2026-09-24).
+    # Les deux sont surveillées ici : l'alerte "pas de stop" doit couvrir les
+    # deux stratégies, pas seulement celle qui existait à l'écriture du script.
+    STRAT = {234000: "SMC", 234100: "VP "}
+    positions = [p for p in (mt5.positions_get() or []) if p.magic in STRAT]
     if not positions:
         ok("none")
     for p in positions:
         age_h = (time.time() - p.time) / 3600.0
-        sig = db.execute("SELECT data FROM scalp_log WHERE ticket=?", (p.ticket,)).fetchone()
+        if p.magic == 234100:
+            try:
+                sig = db.execute("SELECT sl FROM vp_log WHERE ticket=? AND status='taken'",
+                                 (p.ticket,)).fetchone()
+                sig = {"data": json.dumps({"sl": sig["sl"]})} if sig else None
+            except sqlite3.OperationalError:
+                sig = None
+        else:
+            sig = db.execute("SELECT data FROM scalp_log WHERE ticket=?", (p.ticket,)).fetchone()
         r_now = ""
         if sig and sig["data"]:
             try:
@@ -199,7 +314,8 @@ def main():
                         r_now = f"  now {sign * (p.price_current - p.price_open) / risk:+.2f}R"
             except Exception:
                 pass
-        line = (f"{p.symbol:9s} ticket={p.ticket} {'buy' if p.type == 0 else 'sell':4s} "
+        line = (f"[{STRAT[p.magic]}] {p.symbol:9s} ticket={p.ticket} "
+                f"{'buy' if p.type == 0 else 'sell':4s} "
                 f"age={age_h:.1f}h  P&L ${p.profit:+.2f}{r_now}")
         if p.sl == 0:
             alert(f"{line} - NO STOP LOSS attached")
@@ -210,7 +326,7 @@ def main():
 
     # ── performance ─────────────────────────────────────────────────────────
     since = args.since or (session_start[:10] if session_start else "2026-08-17")
-    section(f"PERFORMANCE since {since}")
+    section(f"PERFORMANCE - SMC strategy (scalp_log) since {since}")
     rows = db.execute(
         "SELECT symbol, profit FROM scalp_log WHERE profit IS NOT NULL AND timestamp>=?",
         (since,)).fetchall()
@@ -239,6 +355,31 @@ def main():
             print(f"\n  NOTE: n={n} is below the ~30 this system needs to be "
                   f"informative.\n  Three times a smaller sample pointed the wrong way "
                   f"(metals, pendings, meta gate).")
+
+    # ── Volume Profile, tenue à part (journal vp_log, magic 234100) ─────────
+    section(f"PERFORMANCE - VOLUME PROFILE strategy (vp_log) since {since}")
+    try:
+        vp = db.execute(
+            "SELECT setup, outcome, profit FROM vp_log WHERE status='taken' AND timestamp>=?",
+            (since,)).fetchall()
+    except sqlite3.OperationalError:
+        vp = []
+    if not vp:
+        print("  no Volume Profile trades in window")
+    else:
+        closed = [r for r in vp if r["outcome"] is not None]
+        print(f"  trades={len(vp)}  closed={len(closed)}  open={len(vp) - len(closed)}")
+        for setup in ("poc_bounce", "va_reversal", "va_breakout"):
+            c = [r for r in closed if r["setup"] == setup]
+            if c:
+                w = sum(1 for r in c if r["outcome"] == 1)
+                print(f"    {setup:12s} n={len(c):3d} net=${sum(r['profit'] for r in c):+8.2f} "
+                      f"WR={100*w/len(c):5.1f}%")
+        if closed:
+            w = sum(1 for r in closed if r["outcome"] == 1)
+            print(f"    {'ALL':12s} n={len(closed):3d} "
+                  f"net=${sum(r['profit'] for r in closed):+8.2f} WR={100*w/len(closed):5.1f}%"
+                  f"   (breakeven at 2R = 33.3%)")
 
     # ── verdict ─────────────────────────────────────────────────────────────
     section("VERDICT")

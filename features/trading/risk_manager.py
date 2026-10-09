@@ -51,6 +51,14 @@ def calculate_lot_size(
 
 BOT_MAGIC = 234000
 
+# ── Stratégie Volume Profile — 2026-09-24 ────────────────────────────────────
+# Magic SÉPARÉ : la stratégie Volume Profile tourne comme un SECOND BOT sur le
+# même compte (demande utilisateur), totalement indépendant de la stratégie
+# SMC. Tout le code SMC qui filtre sur BOT_MAGIC (trail / break-even, pauses
+# de série, max_trades, perte journalière ci-dessous) ignore donc les trades
+# VP, et la stratégie VP a ses propres règles (features/volume_profile/).
+VP_MAGIC = 234100
+
 def compute_risk_based_entry(
     symbol:        str,
     action:        str,     # 'buy' or 'sell'
@@ -195,6 +203,8 @@ def get_daily_pnl_pct(session_start: str = None) -> float:
     if deals:
         realized = sum(
             d.profit for d in deals
+            # stratégie SMC uniquement : une perte du bot Volume Profile ne
+            # doit pas arrêter le bot SMC (deux bots indépendants)
             if d.entry == 1 and d.magic == BOT_MAGIC
         )
 

@@ -104,13 +104,21 @@ def _parse_num(s: str) -> float | None:
 # Public API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def is_news_blocked(symbol: str, before: int = 15, after: int = 10) -> dict:
+HIGH_AFTER_MIN = 18   # 10 -> 18 le 2026-10-02 (demande utilisateur) : NFP du
+                      # 02/10 à 13:30 — à 13:40 le marché bougeait encore ; le bot
+                      # SMC a acheté BTC à 13:55, déjà à +7 ATR de l'ouverture du
+                      # jour, et a été stoppé (-10.71 $). Un seul cas : réglage de
+                      # jugement, pas une mesure. Vaut pour les DEUX bots.
+
+
+def is_news_blocked(symbol: str, before: int = 15, after: int = HIGH_AFTER_MIN) -> dict:
     """
     Return {blocked, reason} if a HIGH/MEDIUM impact event is imminent or just released
     for any currency that affects this symbol.
 
     Blocking window: [event_time - before_min, event_time + after_min]
-    HIGH impact → full window.  MEDIUM impact → 10 min before / 5 min after.
+    HIGH impact → full window (15 min before / 18 min after).
+    MEDIUM impact → 10 min before / 5 min after.
     """
     events = _fetch()
     now    = datetime.now(timezone.utc)
@@ -147,6 +155,36 @@ def is_news_blocked(symbol: str, before: int = 15, after: int = 10) -> dict:
             }
 
     return {"blocked": False}
+
+
+def upcoming_high_event(symbol: str, within_min: int) -> dict | None:
+    """Prochaine annonce à IMPACT FORT pour une devise de ce symbole qui tombe
+    dans les `within_min` prochaines minutes (pas une déjà publiée), ou None.
+    Sert au bot Volume Profile à fermer ses positions avant l'annonce."""
+    events = _fetch()
+    now = datetime.now(timezone.utc)
+    curs = _get_currencies(symbol)
+    if not curs or within_min <= 0:
+        return None
+    best = None
+    for ev in events:
+        if ev.get("impact") != "High":
+            continue
+        country = ev.get("country", "")
+        currency = COUNTRY_CURRENCY.get(country, country[:3].upper() if country else "")
+        if currency not in curs:
+            continue
+        dt = _parse_dt(ev)
+        if not dt:
+            continue
+        mins = (dt - now).total_seconds() / 60
+        if 0 <= mins <= within_min and (best is None or dt < best[0]):
+            best = (dt, ev, currency, mins)
+    if best is None:
+        return None
+    dt, ev, currency, mins = best
+    return {"title": ev.get("title", "?"), "currency": currency,
+            "minutes": round(mins, 1), "time": dt.isoformat()}
 
 
 def get_news_momentum(symbol: str, lookback: int = 20) -> dict:

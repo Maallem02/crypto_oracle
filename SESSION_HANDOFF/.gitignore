@@ -1,0 +1,9 @@
+# personal conversation export: never push it
+transcript/
+# Claude's project notes (balances, account, decisions): kept local, the repo is public
+memory/
+HANDOFF.md
+# large regenerable study data
+scripts/*_rows.json
+scripts/study_trades.json
+scripts/*_test.json
