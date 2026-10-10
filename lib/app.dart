@@ -9,6 +9,7 @@ import 'features/auth/providers/auth_provider.dart';
 import 'features/bot/providers/bot_provider.dart';
 import 'features/bot/providers/scalp_provider.dart';
 import 'features/bot/providers/vp_provider.dart';
+import 'features/bot/providers/dt_provider.dart';
 import 'features/dashboard/providers/market_provider.dart';
 import 'features/auth/screens/login_screen.dart';
 import 'features/auth/screens/register_screen.dart';
@@ -81,6 +82,7 @@ class _MainShellState extends ConsumerState<MainShell> {
     if (!mounted) return;
     ref.read(scalpProvider.notifier).refreshStatus();
     ref.read(vpProvider.notifier).refresh();
+    ref.read(dtProvider.notifier).refresh();
     ref.read(botProvider.notifier).refreshAccount();
     if (_index == 0) ref.invalidate(marketsProvider);   // prix CoinGecko : écran visible seulement
   }

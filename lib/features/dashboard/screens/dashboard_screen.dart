@@ -26,6 +26,7 @@ const _periodNames = {
 const _botNames = {
   'smc':    'Scalping',
   'vp':     'Vol. Profile',
+  'dt':     'Daily Trend',
   'manual': 'Manual',
   'other':  'Other',
 };

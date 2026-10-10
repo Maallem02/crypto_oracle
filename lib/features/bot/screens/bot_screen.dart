@@ -4,6 +4,7 @@ import '../../../core/constants/app_colors.dart';
 import '../providers/bot_provider.dart';
 import 'scalp_screen.dart';
 import 'vp_screen.dart';
+import 'dt_screen.dart';
 
 class BotScreen extends ConsumerStatefulWidget {
   const BotScreen({super.key});
@@ -18,8 +19,8 @@ class _BotScreenState extends ConsumerState<BotScreen>
   @override
   void initState() {
     super.initState();
-    // 3e onglet : bot Volume Profile, indépendant du bot Scalping
-    _tabs = TabController(length: 3, vsync: this);
+    // 3e onglet : bot Volume Profile ; 4e : bot Daily Trend — indépendants du bot Scalping
+    _tabs = TabController(length: 4, vsync: this);
   }
 
   @override
@@ -41,10 +42,12 @@ class _BotScreenState extends ConsumerState<BotScreen>
           indicatorColor: AppColors.primary,
           labelColor: AppColors.primary,
           unselectedLabelColor: AppColors.textSecondary,
+          isScrollable: true,
           tabs: const [
             Tab(text: 'Normal Bot'),
             Tab(text: '⚡ Scalping'),
             Tab(text: '📊 Vol. Profile'),
+            Tab(text: '📈 Daily Trend'),
           ],
         ),
       ),
@@ -54,6 +57,7 @@ class _BotScreenState extends ConsumerState<BotScreen>
           _NormalBotBody(botState: botState),
           const ScalpScreen(),
           const VpScreen(),
+          const DtScreen(),
         ],
       ),
     );
