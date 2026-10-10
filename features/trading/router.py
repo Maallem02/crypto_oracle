@@ -3672,6 +3672,45 @@ def post_vp_settings(patch: dict):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ── Bot Daily Trend — troisième bot indépendant (2026-10-09) ─────────────────
+# Suivi de tendance journalier BTC/ETH (features/daily_trend/runner.py). Son
+# propre marche/arrêt, ARRÊTÉ au premier démarrage. Stop = plus de nouvelle
+# entrée ; les positions ouvertes restent gérées (sortie 10 jours) et protégées.
+@router.get("/dt/status")
+def get_dt_status():
+    from features.daily_trend.runner import dt_status
+    return dt_status()
+
+
+@router.post("/dt/start")
+def start_dt():
+    from features.daily_trend.runner import set_enabled
+    return set_enabled(True)
+
+
+@router.post("/dt/stop")
+def stop_dt():
+    from features.daily_trend.runner import set_enabled
+    return set_enabled(False)
+
+
+@router.get("/dt/history")
+def get_dt_history(limit: int = 30):
+    from features.daily_trend.runner import dt_history
+    return dt_history(limit)
+
+
+@router.post("/dt/settings")
+def post_dt_settings(patch: dict):
+    """symbols (BTC/ETH) et risk_pct (0.1-5 %), validés, tout ou rien,
+    appliqués au prochain signal sans redémarrage."""
+    from features.daily_trend.runner import SettingsError, update_settings
+    try:
+        return update_settings(patch)
+    except SettingsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/scalping/scan-log")
 def get_scan_log(limit: int = 50):
     """Last N scan rejections — shows exactly why each signal was blocked."""

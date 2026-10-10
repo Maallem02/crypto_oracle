@@ -19,9 +19,9 @@ import MetaTrader5 as mt5
 import requests
 
 from features.trading.mt5_client import ensure_mt5
-from features.trading.risk_manager import BOT_MAGIC, VP_MAGIC
+from features.trading.risk_manager import BOT_MAGIC, DT_MAGIC, VP_MAGIC
 
-BOTS = {BOT_MAGIC: "smc", VP_MAGIC: "vp", 0: "manual"}
+BOTS = {BOT_MAGIC: "smc", VP_MAGIC: "vp", DT_MAGIC: "dt", 0: "manual"}
 UTC = timezone.utc
 
 
@@ -99,7 +99,7 @@ def _period_block(rows, start_ts, balance_now, events, cash) -> dict:
     s["deposits"] = round(deposits, 2)
     s["return_pct"] = round(100 * s["net"] / capital, 1) if capital > 0 else None
     s["by_bot"] = {b: _summary([r for r in sel if r["bot"] == b])
-                   for b in ("smc", "vp", "manual") if any(r["bot"] == b for r in sel)}
+                   for b in ("smc", "vp", "dt", "manual") if any(r["bot"] == b for r in sel)}
     syms = sorted({r["symbol"] for r in sel})
     s["by_symbol"] = sorted(({"symbol": x, **_summary([r for r in sel if r["symbol"] == x])}
                              for x in syms), key=lambda v: v["net"], reverse=True)
@@ -248,7 +248,7 @@ def _risk(a, trades, balance_at, today) -> dict:
     start_ts = today.timestamp()
     out["today_by_bot"] = {b: round(sum(r["profit"] for r in trades
                                         if r["bot"] == b and r["closed_ts"] >= start_ts), 2)
-                           for b in ("smc", "vp", "manual")}
+                           for b in ("smc", "vp", "dt", "manual")}
     return out
 
 

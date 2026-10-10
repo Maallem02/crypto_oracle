@@ -64,3 +64,5 @@ data/binance_1m/
 # VP gold/USDJPY Exness M5 study outputs (regenerable by vp_exness_m5_study.py)
 data/vp_exness_m5_*
 data/vp_gold_3y_*
+data/trend_following_out.txt
+data/trend_robustness_out.txt

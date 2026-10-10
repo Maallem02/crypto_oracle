@@ -3,7 +3,7 @@ import MetaTrader5 as mt5
 from datetime import datetime, timezone
 from features.trading.risk_manager import (
     calculate_lot_size, can_trade, get_daily_pnl_pct, compute_risk_based_entry, BOT_MAGIC,
-    VP_MAGIC,
+    VP_MAGIC, OTHER_BOT_MAGICS,
 )
 
 # Symboles 24/7 — non concernés par les fenêtres rollover/ouverture forex
@@ -154,7 +154,7 @@ def place_trade(
     # (ETH 07-09/07-10/07-11, USDJPY 07-13) : risque corrélé sans nouvel edge.
     _on_symbol = mt5.positions_get(symbol=mt5_symbol) or []
     _existing = ([p for p in _on_symbol if p.magic == VP_MAGIC] if _is_vp
-                 else [p for p in _on_symbol if p.magic != VP_MAGIC])
+                 else [p for p in _on_symbol if p.magic not in OTHER_BOT_MAGICS])
     _max_here = max(1, int(max_per_symbol)) if _is_vp else 1
     if len(_existing) >= _max_here:
         return {
@@ -172,8 +172,8 @@ def place_trade(
     _grp = None if _is_vp else next((g for g in _CORR_GROUPS if mt5_symbol in g), None)
     if _grp:
         for _p in (mt5.positions_get() or []):
-            if _p.magic == VP_MAGIC:
-                continue                      # les positions VP ne gênent pas SMC
+            if _p.magic in OTHER_BOT_MAGICS:
+                continue                      # les positions VP / Daily Trend ne gênent pas SMC
             if _p.symbol in _grp and _p.symbol != mt5_symbol:
                 _p_dir = "buy" if _p.type == 0 else "sell"
                 if _p_dir == action:
@@ -498,10 +498,10 @@ def place_pending_trade(
     if not mt5_symbol:
         return {"success": False, "reason": f"Symbol {symbol} not supported"}
 
-    # Ordres limite = stratégie SMC uniquement. Les positions de la stratégie
-    # Volume Profile (VP_MAGIC) sont ignorées : les deux bots sont indépendants.
+    # Ordres limite = stratégie SMC uniquement. Les positions des autres bots
+    # (Volume Profile, Daily Trend) sont ignorées : les bots sont indépendants.
     _existing = [p for p in (mt5.positions_get(symbol=mt5_symbol) or [])
-                 if p.magic != VP_MAGIC]
+                 if p.magic not in OTHER_BOT_MAGICS]
     if _existing:
         return {
             "success": False,

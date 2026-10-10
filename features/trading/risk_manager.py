@@ -59,6 +59,13 @@ BOT_MAGIC = 234000
 # VP, et la stratégie VP a ses propres règles (features/volume_profile/).
 VP_MAGIC = 234100
 
+# ── Bot Daily Trend — 2026-10-09 ─────────────────────────────────────────────
+# Troisième bot indépendant (features/daily_trend/) : suivi de tendance
+# journalier, positions de plusieurs semaines. Même principe que VP : le code
+# SMC qui filtre sur BOT_MAGIC l'ignore, et SMC ne compte pas ses positions.
+DT_MAGIC = 234200
+OTHER_BOT_MAGICS = (VP_MAGIC, DT_MAGIC)   # positions que les règles SMC ignorent
+
 def compute_risk_based_entry(
     symbol:        str,
     action:        str,     # 'buy' or 'sell'

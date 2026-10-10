@@ -125,6 +125,12 @@ def startup():
     from features.volume_profile.runner import vp_job
     scheduler.add_job(vp_job,                'interval', minutes=1,  id='vp_scan',
                       coalesce=True, misfire_grace_time=30)
+    # Bot Daily Trend : troisième bot indépendant, bougies journalières — il
+    # n'agit qu'une fois par jour (bougie terminée), le minuteur ne fait que
+    # guetter la clôture de 00:00 UTC (features/daily_trend/runner.py)
+    from features.daily_trend.runner import dt_job
+    scheduler.add_job(dt_job,                'interval', minutes=5,  id='dt_scan',
+                      coalesce=True, misfire_grace_time=120)
     scheduler.add_job(_zone_weekly_retrain,  'cron',     day_of_week='sun', hour=2, minute=0,
                       id='zone_retrain',     coalesce=True, misfire_grace_time=3600)
     scheduler.start()
