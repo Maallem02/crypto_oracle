@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
 import '../providers/vp_provider.dart';
+import '../../../widgets/risk_per_trade_field.dart';
+import '../../../widgets/manual_lot_fields.dart';
+import '../../../widgets/expectancy_card.dart';
 
 // ── Onglet du bot Volume Profile ──────────────────────────────────────────────
 // Second bot, indépendant du bot Scalping : son propre Start/Stop et ses propres
@@ -68,6 +71,8 @@ class _VpScreenState extends ConsumerState<VpScreen> {
             ]),
             const SizedBox(height: 8),
             _VpStatusCard(s: s, ntf: ntf),
+            const SizedBox(height: 12),
+            const ExpectancyCard(bot: 'vp'),
             const SizedBox(height: 12),
 
             if (s.error != null) ...[
@@ -264,9 +269,6 @@ class _VpOpenCard extends StatelessWidget {
 // next scan. Separate from the Scalping settings in every way.
 // ─────────────────────────────────────────────────────────────────────────────
 
-String _lotText(double lot, double step) =>
-    lot.toStringAsFixed(step >= 1 ? 0 : (step >= 0.1 ? 1 : 2));
-
 class _VpSettingsCard extends StatelessWidget {
   final VpState s;
   final VpNotifier ntf;
@@ -297,22 +299,25 @@ class _VpSettingsCard extends StatelessWidget {
               ),
           ]),
 
-        // ── lot size per enabled symbol ──
-        if (s.symbols.isNotEmpty) ...[
-          const _Label('Lot size (tap the number to type it)'),
-          for (final sym in s.symbols) _LotRow(sym: sym, s: s, ntf: ntf),
-        ],
-
-        // ── risk per trade ──
-        _Label('Max risk per trade: ${s.riskCapPct.toStringAsFixed(0)}% of balance'),
-        Slider(
-          value: s.riskCapPct.clamp(1, 50).toDouble(), min: 1, max: 50, divisions: 49,
-          activeColor: AppColors.warning,
-          label: '${s.riskCapPct.toStringAsFixed(0)}%',
-          onChanged: s.busy ? null : ntf.setRiskCap,
+        // ── risque par trade (2026-10-10) : remplace les lots fixes et le plafond ──
+        const SizedBox(height: 12),
+        RiskPerTradeField(
+          inputKey: const Key('vp_risk_input'),
+          value: s.riskPct,
+          enabled: !s.busy,
+          onChanged: ntf.setRiskPct,
         ),
-        const Text('A trade whose stop would lose more than this is skipped.',
-          style: TextStyle(color: AppColors.textHint, fontSize: 10)),
+        // Lot manuel par symbole (2026-10-12) : vide = Auto, sinon ce lot exactement
+        ManualLotFields(
+          symbols: s.symbols,
+          lots: s.manualLots,
+          rules: s.available,
+          enabled: !s.busy,
+          onChanged: ntf.setManualLot,
+          safetyNote: 'Safety kept: a trade whose stop would lose more than '
+              '${s.riskCapPct.toStringAsFixed(0)}% of the balance is refused, never resized. '
+              'Press Save to send it.',
+        ),
 
         // ── daily loss limit ──
         _Label(s.dailyLossPct <= 0
@@ -506,78 +511,6 @@ class _VpSettingsCard extends StatelessWidget {
           ),
       ]),
     );
-  }
-}
-
-class _LotRow extends StatelessWidget {
-  final String sym;
-  final VpState s;
-  final VpNotifier ntf;
-  const _LotRow({required this.sym, required this.s, required this.ntf});
-
-  @override
-  Widget build(BuildContext context) {
-    final rule = s.available[sym] ?? const LotRule(0.01, 0.01, 100);
-    final lot  = s.lotSizes[sym] ?? rule.minLot;
-    return Row(children: [
-      SizedBox(width: 72, child: Text(sym,
-        style: const TextStyle(color: AppColors.textPrimary, fontSize: 13))),
-      IconButton(
-        icon: const Icon(Icons.remove_circle_outline, size: 20),
-        color: AppColors.textSecondary,
-        onPressed: (s.busy || lot <= rule.minLot + 1e-9) ? null : () => ntf.stepLot(sym, -1),
-      ),
-      GestureDetector(
-        onTap: s.busy ? null : () => _typeLot(context, rule, lot),
-        child: Container(
-          width: 64,
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          decoration: BoxDecoration(
-            color: AppColors.surface, borderRadius: BorderRadius.circular(6)),
-          child: Text(_lotText(lot, rule.lotStep), textAlign: TextAlign.center,
-            style: const TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold)),
-        ),
-      ),
-      IconButton(
-        icon: const Icon(Icons.add_circle_outline, size: 20),
-        color: AppColors.textSecondary,
-        onPressed: s.busy ? null : () => ntf.stepLot(sym, 1),
-      ),
-      Expanded(child: Text('min ${_lotText(rule.minLot, rule.lotStep)}',
-        textAlign: TextAlign.right,
-        style: const TextStyle(color: AppColors.textHint, fontSize: 10))),
-    ]);
-  }
-
-  Future<void> _typeLot(BuildContext context, LotRule rule, double current) async {
-    final ctrl = TextEditingController(text: _lotText(current, rule.lotStep));
-    final value = await showDialog<double>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.cardBackground,
-        title: Text('$sym lot size', style: const TextStyle(color: AppColors.textPrimary)),
-        content: TextField(
-          controller: ctrl,
-          autofocus: true,
-          keyboardType: const TextInputType.numberWithOptions(decimal: true),
-          style: const TextStyle(color: AppColors.textPrimary),
-          decoration: InputDecoration(
-            helperText: 'Broker minimum ${_lotText(rule.minLot, rule.lotStep)}, '
-                'step ${_lotText(rule.lotStep, rule.lotStep)}',
-            helperStyle: const TextStyle(color: AppColors.textSecondary),
-          ),
-          onSubmitted: (t) => Navigator.pop(ctx, double.tryParse(t.replaceAll(',', '.'))),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, double.tryParse(ctrl.text.replaceAll(',', '.'))),
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-    if (value != null) ntf.setLot(sym, value);
   }
 }
 

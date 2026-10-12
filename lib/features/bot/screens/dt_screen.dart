@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
 import '../providers/dt_provider.dart';
+import '../../../widgets/expectancy_card.dart';
 
 // ── Onglet du bot Daily Trend ─────────────────────────────────────────────────
 // Troisième bot, indépendant : son propre Start/Stop, ses propres réglages et
@@ -70,6 +71,8 @@ class _DtScreenState extends ConsumerState<DtScreen> {
             const SizedBox(height: 8),
             _DtStatusCard(s: s, ntf: ntf),
             const SizedBox(height: 12),
+            const ExpectancyCard(bot: 'dt'),
+            const SizedBox(height: 12),
             if (s.loaded && !s.demo) ...[
               const _Banner(text: 'REAL account connected — this bot was only tested, never run with real money.',
                 color: AppColors.error),
@@ -80,7 +83,7 @@ class _DtScreenState extends ConsumerState<DtScreen> {
                 color: AppColors.warning,
                 text: '$sym: the smallest lot (${s.symbolInfo[sym]!['min_lot']}) would risk '
                     '\$${s.symbolInfo[sym]!['min_lot_risk_usd']} = ${s.symbolInfo[sym]!['min_lot_risk_pct']}% '
-                    'of your balance, above your ${_pct(s.riskPct)} limit. $sym signals are skipped until the '
+                    'of your balance, above your ${_pct(s.tradeLimitPct)} limit. $sym signals are skipped until the '
                     'balance is about \$${(s.balanceNeeded(sym) ?? 0).toStringAsFixed(0)}.',
               ),
               const SizedBox(height: 12),
@@ -103,6 +106,8 @@ class _DtScreenState extends ConsumerState<DtScreen> {
               _DtOpenCard(s: s),
               const SizedBox(height: 12),
             ],
+            const DtAuditCard(),
+            const SizedBox(height: 12),
             _DtSettingsCard(s: s, ntf: ntf),
             const SizedBox(height: 12),
             const _DtRulesCard(),
@@ -230,7 +235,15 @@ class _DtOpenCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => _Card(
     title: '📂 Open Daily Trend positions',
-    child: Column(children: [
+    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      if (s.cryptoRisk['open_pct'] != null)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 4),
+          child: Text('Crypto risk open: ${_pct((s.cryptoRisk['open_pct'] as num).toDouble())} '
+              'of the ${_pct(s.cryptoCapPct)} cap — the next trade can risk up to '
+              '${_pct(((s.cryptoRisk['next_trade_pct'] as num?) ?? 0).toDouble())}',
+            style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+        ),
       for (final p in s.openPositions)
         Padding(
           padding: const EdgeInsets.symmetric(vertical: 4),
@@ -260,27 +273,55 @@ class _DtSettingsCard extends StatefulWidget {
 class _DtSettingsCardState extends State<_DtSettingsCard> {
   final _risk = TextEditingController();
   final _focus = FocusNode();
+  final _cap = TextEditingController();
+  final _capFocus = FocusNode();
 
   @override
   void didUpdateWidget(covariant _DtSettingsCard old) {
     super.didUpdateWidget(old);
     if (!_focus.hasFocus) _risk.text = widget.s.riskPct.toString();
+    if (!_capFocus.hasFocus) _cap.text = widget.s.cryptoCapPct.toString();
   }
 
   @override
   void initState() {
     super.initState();
     _risk.text = widget.s.riskPct.toString();
+    _cap.text = widget.s.cryptoCapPct.toString();
     _focus.addListener(() { if (!_focus.hasFocus) _apply(); });
+    _capFocus.addListener(() { if (!_capFocus.hasFocus) _applyCap(); });
   }
 
   @override
-  void dispose() { _risk.dispose(); _focus.dispose(); super.dispose(); }
+  void dispose() {
+    _risk.dispose(); _focus.dispose(); _cap.dispose(); _capFocus.dispose();
+    super.dispose();
+  }
 
   void _apply() {
     final v = double.tryParse(_risk.text.replaceAll(',', '.'));
     _risk.text = (v == null ? widget.s.riskPct : widget.ntf.setRisk(v)).toString();
   }
+
+  void _applyCap() {
+    final v = double.tryParse(_cap.text.replaceAll(',', '.'));
+    _cap.text = (v == null ? widget.s.cryptoCapPct : widget.ntf.setCap(v)).toString();
+  }
+
+  Widget _pctField(Key key, TextEditingController c, FocusNode f, VoidCallback onDone) => SizedBox(
+    width: 72,
+    child: TextField(
+      key: key,
+      controller: c,
+      focusNode: f,
+      enabled: !widget.s.busy,
+      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+      inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))],
+      onSubmitted: (_) => onDone(),
+      style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
+      decoration: const InputDecoration(suffixText: '%', isDense: true, border: OutlineInputBorder()),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -311,24 +352,36 @@ class _DtSettingsCardState extends State<_DtSettingsCard> {
             label: _pct(s.riskPct),
             onChanged: s.busy ? null : (v) => ntf.setRisk(v),
           )),
-          SizedBox(width: 72, child: TextField(
-            key: const Key('dt_risk_input'),
-            controller: _risk,
-            focusNode: _focus,
-            enabled: !s.busy,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))],
-            onSubmitted: (_) => _apply(),
-            style: const TextStyle(color: AppColors.textPrimary, fontSize: 13),
-            decoration: const InputDecoration(suffixText: '%', isDense: true,
-              border: OutlineInputBorder()),
-          )),
+          _pctField(const Key('dt_risk_input'), _risk, _focus, _apply),
         ]),
         Text('Each trade is sized so that hitting its stop loses this share of the balance '
             '($dtRiskMin% to ${dtRiskMax.toStringAsFixed(0)}%, type any value). A trade whose smallest '
             'lot would risk more is skipped, never forced. Tested at 2%: about 1 year in 5 loses money, '
             'typical worst drawdown about 14%.',
           style: const TextStyle(color: AppColors.textHint, fontSize: 10)),
+        _Label('Max crypto risk, BTC + ETH open together: ${_pct(s.cryptoCapPct)}'),
+        Row(children: [
+          Expanded(child: Slider(
+            value: s.cryptoCapPct.clamp(0.5, dtCapMax).toDouble(), min: 0.5, max: dtCapMax, divisions: 19,
+            activeColor: AppColors.warning,
+            label: _pct(s.cryptoCapPct),
+            onChanged: s.busy ? null : (v) => ntf.setCap(v),
+          )),
+          _pctField(const Key('dt_cap_input'), _cap, _capFocus, _applyCap),
+        ]),
+        const Text('BTC and ETH usually move together, so two open trades are really one bigger bet. '
+            'The first trade gets your risk per trade; the second only gets what is left of this cap, '
+            'and is skipped if nothing is left. Set it to twice your risk per trade to switch the link off. '
+            'History 2018–2026 at 2% per trade: worst drop −18% with a 3% cap, −22% without.',
+          style: TextStyle(color: AppColors.textHint, fontSize: 10)),
+        if (s.cryptoCapPct < s.riskPct)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text('The cap (${_pct(s.cryptoCapPct)}) is below your risk per trade (${_pct(s.riskPct)}): '
+                'every trade will risk at most ${_pct(s.cryptoCapPct)}, and a second one is skipped while '
+                'the first is open.',
+              style: const TextStyle(color: AppColors.warning, fontSize: 11)),
+          ),
         const SizedBox(height: 12),
         Row(children: [
           Expanded(child: ElevatedButton.icon(
@@ -363,6 +416,7 @@ class _DtRulesCard extends StatelessWidget {
       '• Sells when a daily close ends below the lowest low of the previous 10 days.\n'
       '• Protective stop at the broker: 2 × the daily ATR (14 days) below the entry.\n'
       '• No target: it lets trends run. Most trades are small losses; a few big trends pay for them.\n'
+      '• BTC and ETH share one risk cap: when one is already open, the other only gets what is left.\n'
       '• Tested on Exness 2018–2026: BTC +2.29R per trade, ETH +1.08R per trade, '
       'about 11 trades a year for both together.',
       style: TextStyle(color: AppColors.textSecondary, fontSize: 12, height: 1.5),
@@ -420,6 +474,116 @@ class _DtHistoryCard extends ConsumerWidget {
           Text(r['reason'] as String, style: const TextStyle(color: AppColors.textHint, fontSize: 10)),
       ]),
     );
+  }
+}
+
+// ── Execution check: live trades vs the tested rules ──────────────────────────
+// Un bot suit toujours ses règles : ce qui peut dériver, c'est l'exécution
+// (backend arrêté à la clôture, retard, prix, stop, taille, sortie, main).
+String _r(num? v) => v == null ? '--' : '${v >= 0 ? '+' : ''}${v.toStringAsFixed(2)}R';
+
+class DtAuditCard extends ConsumerWidget {
+  const DtAuditCard({super.key});
+
+  static const _icon = {'ok': '✅', 'info': 'ℹ️', 'warn': '⚠️', 'problem': '❌'};
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final audit = ref.watch(dtAuditProvider);
+    return _Card(
+      title: '🔍 Execution check — live vs tested rules',
+      child: audit.when(
+        loading: () => const Text('Checking…', style: TextStyle(color: AppColors.textSecondary, fontSize: 12)),
+        error: (_, __) => const Text('Check unavailable', style: TextStyle(color: AppColors.error, fontSize: 12)),
+        data: (a) => a == null
+            ? const Text('Check unavailable — backend unreachable',
+                style: TextStyle(color: AppColors.error, fontSize: 12))
+            : _body(a),
+      ),
+    );
+  }
+
+  Widget _body(Map<String, dynamic> a) {
+    final sum = (a['summary'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final rng = (a['range'] as Map?)?.cast<String, dynamic>() ?? const {};
+    final events = ((a['events'] as List?) ?? const []).cast<Map>();
+    final trades = ((a['trades'] as List?) ?? const []).cast<Map>();
+    final verdict = a['verdict'] as String? ?? '';
+    final closes = a['checked_closes'] ?? 0;
+    final since = _localTime(a['since'] as String?).split(' ').first;
+    final problems = (sum['problems'] as num?) ?? 0, warns = (sum['warnings'] as num?) ?? 0;
+    final (String text, Color color) = switch (verdict) {
+      'not_started' => ('The bot has not checked a daily close yet.', AppColors.textSecondary),
+      'problems'    => ('$problems problem${problems == 1 ? '' : 's'} — see below.', AppColors.error),
+      'warnings'    => ('$warns warning${warns == 1 ? '' : 's'} — see below.', AppColors.warning),
+      'ok'          => ('All ${sum['live_trades']} trades match the tested rules.', AppColors.success),
+      _             => ('No trade yet — $closes daily closes checked since $since, nothing missed.',
+                        AppColors.success),
+    };
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text(text, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 13)),
+      if (verdict != 'not_started') ...[
+        const SizedBox(height: 10),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+          _Stat(label: 'Closes', value: '$closes'),
+          _Stat(label: 'Trades', value: '${sum['live_trades'] ?? 0}'),
+          _Stat(label: 'Skipped', value: '${sum['skipped_by_design'] ?? 0}'),
+          _Stat(label: 'Warnings', value: '$warns', color: warns > 0 ? AppColors.warning : null),
+          _Stat(label: 'Problems', value: '$problems', color: problems > 0 ? AppColors.error : null),
+        ]),
+      ],
+      if (sum['avg_gap_r'] != null) ...[
+        const SizedBox(height: 8),
+        Text('Live result vs the test on the same trades: ${_r(sum['avg_gap_r'] as num?)} per trade '
+            '(entry price ${_r(sum['avg_entry_slip_r'] as num?)} per trade)',
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+      ],
+      if ((rng['n'] as num? ?? 0) > 0) ...[
+        const SizedBox(height: 8),
+        Text(rng['status'] == 'below'
+            ? 'Below what the test expects — review the bot before it trades on (the rule we agreed).'
+            : 'Inside the range the test expects.',
+          style: TextStyle(color: rng['status'] == 'below' ? AppColors.error : AppColors.success,
+            fontWeight: FontWeight.w600, fontSize: 12)),
+        Text('Result so far ${_r(rng['sum_r'] as num?)} over ${rng['n']} trades; 90% of tested histories '
+            'give ${_r(rng['expected_p5'] as num?)} to ${_r(rng['expected_p95'] as num?)}. '
+            'Worst drop ${_r(rng['max_dd_r'] as num?)} (5% worst case ${_r(rng['dd_p5'] as num?)}), '
+            'losing streak ${rng['losing_streak']} (95% of tests: ${rng['streak_p95']} or fewer).',
+          style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+      ],
+      if (events.isNotEmpty) ...[
+        const _Label('What the bot did at each signal'),
+        for (final e in events.take(8))
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: Text('${_icon[e['status']] ?? '•'} ${_localTime(e['time'] as String?)}  ${e['symbol']}: ${e['text']}',
+              style: TextStyle(fontSize: 11, color: switch (e['status']) {
+                'problem' => AppColors.error, 'warn' => AppColors.warning, _ => AppColors.textPrimary })),
+          ),
+      ],
+      if (trades.isNotEmpty) ...[
+        const _Label('Each trade vs its tested twin'),
+        for (final t in trades.take(5))
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 3),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('${_icon[t['check']] ?? '•'} ${t['symbol']} ${t['signal_day']} breakout — '
+                  '${t['status'] == 'open' ? 'open' : 'result ${_r(t['r'] as num?)} vs test ${_r(t['test_r'] as num?)}'}',
+                style: const TextStyle(color: AppColors.textPrimary, fontSize: 12)),
+              Text('entered ${(t['late_min'] as num? ?? 0).toStringAsFixed(0)} min after the close, '
+                  'price ${_r(t['entry_slip_r'] as num?)} vs test, stop ${t['stop_dev_pct'] ?? '--'}% from 2 ATR'
+                  '${t['risk_pct'] != null ? ', risk ${t['risk_pct']}%' : ''}',
+                style: const TextStyle(color: AppColors.textHint, fontSize: 10)),
+              for (final n in ((t['notes'] as List?) ?? const []))
+                Text('  • $n', style: const TextStyle(color: AppColors.warning, fontSize: 10)),
+            ]),
+          ),
+      ],
+      const SizedBox(height: 6),
+      const Text('A bot always follows its rules; this checks the execution — timing, prices, stop, size, '
+          'exits — against the tested code, every daily close. Updated every 10 min.',
+        style: TextStyle(color: AppColors.textHint, fontSize: 10)),
+    ]);
   }
 }
 

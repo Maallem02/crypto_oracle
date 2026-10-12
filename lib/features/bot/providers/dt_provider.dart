@@ -11,6 +11,9 @@ import '../../../core/network/dio_client.dart';
 const dtSymbols = ['BTC', 'ETH'];
 const dtRiskMin = 0.1;
 const dtRiskMax = 5.0;
+// Plafond commun BTC + ETH : risque total des positions ouvertes ensemble.
+const dtCapMin = 0.1;
+const dtCapMax = 10.0;
 
 class DtState {
   final bool loaded;
@@ -21,10 +24,12 @@ class DtState {
   final bool demo;
   final Map<String, Map<String, dynamic>> symbolInfo;   // niveaux du jour, risque du lot minimum
   final List<Map<String, dynamic>> openPositions;
+  final Map<String, dynamic> cryptoRisk;               // risque ouvert / restant sous le plafond
 
   // réglages (éditables)
   final List<String> symbols;
   final double riskPct;
+  final double cryptoCapPct;
 
   final bool dirty;
   final bool busy;
@@ -41,8 +46,10 @@ class DtState {
     this.demo          = true,
     this.symbolInfo    = const {},
     this.openPositions = const [],
+    this.cryptoRisk    = const {},
     this.symbols       = const ['BTC', 'ETH'],
     this.riskPct       = 2.0,
+    this.cryptoCapPct  = 3.0,
     this.dirty         = false,
     this.busy          = false,
     this.error,
@@ -59,8 +66,10 @@ class DtState {
     bool? demo,
     Map<String, Map<String, dynamic>>? symbolInfo,
     List<Map<String, dynamic>>? openPositions,
+    Map<String, dynamic>? cryptoRisk,
     List<String>? symbols,
     double? riskPct,
+    double? cryptoCapPct,
     bool? dirty,
     bool? busy,
     String? error,
@@ -75,8 +84,10 @@ class DtState {
     demo:           demo           ?? this.demo,
     symbolInfo:     symbolInfo     ?? this.symbolInfo,
     openPositions:  openPositions  ?? this.openPositions,
+    cryptoRisk:     cryptoRisk     ?? this.cryptoRisk,
     symbols:        symbols        ?? this.symbols,
     riskPct:        riskPct        ?? this.riskPct,
+    cryptoCapPct:   cryptoCapPct   ?? this.cryptoCapPct,
     dirty:          dirty          ?? this.dirty,
     busy:           busy           ?? this.busy,
     error:          error,          // null = effacée à chaque changement d'état
@@ -84,10 +95,13 @@ class DtState {
     updatedAt:      updatedAt      ?? this.updatedAt,
   );
 
-  /// Solde nécessaire pour que le lot minimum du symbole reste sous le risque choisi.
+  /// Risque maximal d'un trade seul : le risque par trade, sans dépasser le plafond crypto.
+  double get tradeLimitPct => riskPct < cryptoCapPct ? riskPct : cryptoCapPct;
+
+  /// Solde nécessaire pour que le lot minimum du symbole reste sous cette limite.
   double? balanceNeeded(String sym) {
     final usd = (symbolInfo[sym]?['min_lot_risk_usd'] as num?)?.toDouble();
-    return (usd == null || riskPct <= 0) ? null : usd / (riskPct / 100);
+    return (usd == null || tradeLimitPct <= 0) ? null : usd / (tradeLimitPct / 100);
   }
 }
 
@@ -124,8 +138,10 @@ class DtNotifier extends StateNotifier<DtState> {
       symbolInfo:     info,
       openPositions:  ((d['open_positions'] as List?) ?? const [])
           .map((e) => (e as Map).cast<String, dynamic>()).toList(),
+      cryptoRisk:     (d['crypto_risk'] as Map?)?.cast<String, dynamic>() ?? const {},
       symbols:        keep ? state.symbols : ((st['symbols'] as List?)?.cast<String>() ?? const []),
       riskPct:        keep ? state.riskPct : (st['risk_pct'] as num?)?.toDouble() ?? 2.0,
+      cryptoCapPct:   keep ? state.cryptoCapPct : (st['max_crypto_risk_pct'] as num?)?.toDouble() ?? 3.0,
       dirty:          keep,
       updatedAt:      DateTime.now(),
     );
@@ -174,11 +190,21 @@ class DtNotifier extends StateNotifier<DtState> {
     return r;
   }
 
+  /// Plafond crypto commun (BTC + ETH ouverts ensemble), borné à 0.1-10 %, arrondi à 0.01.
+  double setCap(double v) {
+    final c = (v.clamp(dtCapMin, dtCapMax) * 100).round() / 100;
+    state = state.copyWith(cryptoCapPct: c, dirty: true);
+    return c;
+  }
+
   Future<void> save() async {
     state = state.copyWith(busy: true);
     try {
-      final r = await _dio.post('/trading/dt/settings',
-          data: {'symbols': state.symbols, 'risk_pct': state.riskPct});
+      final r = await _dio.post('/trading/dt/settings', data: {
+        'symbols': state.symbols,
+        'risk_pct': state.riskPct,
+        'max_crypto_risk_pct': state.cryptoCapPct,
+      });
       state = _fromStatus((r.data as Map).cast<String, dynamic>(), keepEdits: false)
           .copyWith(busy: false, notice: 'Saved — used from the next daily signal');
     } catch (e) {
@@ -193,6 +219,21 @@ class DtNotifier extends StateNotifier<DtState> {
 }
 
 final dtProvider = StateNotifierProvider<DtNotifier, DtState>((ref) => DtNotifier());
+
+// Contrôle d'exécution : chaque clôture et chaque trade réel comparés aux règles
+// testées (/trading/dt/audit, 10 min de cache côté backend). null = injoignable.
+final dtAuditProvider = StreamProvider.autoDispose<Map<String, dynamic>?>((ref) async* {
+  final dio = DioClient.create(timeout: const Duration(seconds: 60));   // 1er calcul : quelques secondes
+  while (true) {
+    try {
+      final r = await dio.get('/trading/dt/audit');
+      yield (r.data as Map).cast<String, dynamic>();
+    } catch (_) {
+      yield null;
+    }
+    await Future.delayed(const Duration(minutes: 10));
+  }
+});
 
 // Journal du bot Daily Trend : entrées, sorties, signaux refusés.
 final dtHistoryProvider = StreamProvider.autoDispose<List>((ref) async* {

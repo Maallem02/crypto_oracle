@@ -41,6 +41,10 @@ class VpState {
   final int newsCloseMin;           // fermer les positions X min avant une annonce forte (0 = off)
   final double maxSpreadPct;        // spread >= X % de la distance au stop -> trade ignoré (0 = off)
   final bool firstPerEdge;          // seulement la 1re réintégration du jour par bord (VAL / VAH)
+  final double riskPct;             // risque par trade en % du solde (lot calculé par le backend)
+  // Lot choisi à la main par symbole (2026-10-12) : absent = Auto (riskPct),
+  // présent = ce lot exactement. Clé backend manual_lots.
+  final Map<String, double> manualLots;
   final Map<String, LotRule> available;  // symboles offerts par le broker
 
   final bool dirty;                // modifs non enregistrées
@@ -69,6 +73,8 @@ class VpState {
     this.newsCloseMin   = 15,
     this.maxSpreadPct   = 10,
     this.firstPerEdge   = true,
+    this.riskPct        = 1.0,
+    this.manualLots     = const {},
     this.available      = const {},
     this.dirty          = false,
     this.busy           = false,
@@ -97,6 +103,8 @@ class VpState {
     int? newsCloseMin,
     double? maxSpreadPct,
     bool? firstPerEdge,
+    double? riskPct,
+    Map<String, double>? manualLots,
     Map<String, LotRule>? available,
     bool? dirty,
     bool? busy,
@@ -123,6 +131,8 @@ class VpState {
     newsCloseMin:   newsCloseMin   ?? this.newsCloseMin,
     maxSpreadPct:   maxSpreadPct   ?? this.maxSpreadPct,
     firstPerEdge:   firstPerEdge   ?? this.firstPerEdge,
+    riskPct:        riskPct        ?? this.riskPct,
+    manualLots:     manualLots     ?? this.manualLots,
     available:      available      ?? this.available,
     dirty:          dirty          ?? this.dirty,
     busy:           busy           ?? this.busy,
@@ -148,6 +158,9 @@ class VpState {
     'news_close_before_min': newsCloseMin,
     'max_spread_pct': maxSpreadPct,
     'first_per_edge': firstPerEdge,
+    'sizing_mode':    'risk',         // 2026-10-10 : lot depuis le risque par trade…
+    'risk_pct':       riskPct,
+    'manual_lots':    manualLots,     // …sauf sur les symboles où un lot est tapé (liste complète)
   };
 }
 
@@ -217,6 +230,10 @@ class VpNotifier extends StateNotifier<VpState> {
           : (st['max_spread_pct'] as num?)?.toDouble() ?? 10,
       firstPerEdge:   keep ? state.firstPerEdge
           : st['first_per_edge'] as bool? ?? true,
+      riskPct:        keep ? state.riskPct
+          : (st['risk_pct'] as num?)?.toDouble() ?? 1.0,
+      manualLots:     keep ? state.manualLots
+          : ((st['manual_lots'] as Map?) ?? {}).map((k, v) => MapEntry(k as String, (v as num).toDouble())),
       dirty:          keep,
       updatedAt:      DateTime.now(),
     );
@@ -314,6 +331,20 @@ class VpNotifier extends StateNotifier<VpState> {
       state = state.copyWith(maxSpreadPct: state.maxSpreadPct > 0 ? 0.0 : 10.0, dirty: true);
   void setMaxSpread(double v) =>
       state = state.copyWith(maxSpreadPct: v.roundToDouble(), dirty: true);
+
+  /// Risque par trade, 0.1 à 5 %, arrondi à 0.01. Retourne la valeur retenue.
+  double setRiskPct(double v) {
+    final r = (v.clamp(0.1, 5.0) * 100).round() / 100;
+    state = state.copyWith(riskPct: r, dirty: true);
+    return r;
+  }
+
+  /// Lot manuel d'un symbole ; null = retour en Auto (risque par trade).
+  void setManualLot(String sym, double? lot) {
+    final map = Map<String, double>.from(state.manualLots);
+    lot == null || lot <= 0 ? map.remove(sym) : map[sym] = lot;
+    state = state.copyWith(manualLots: map, dirty: true);
+  }
 
   void toggleFirstPerEdge() =>
       state = state.copyWith(firstPerEdge: !state.firstPerEdge, dirty: true);

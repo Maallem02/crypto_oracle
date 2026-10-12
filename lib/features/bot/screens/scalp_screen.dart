@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
+import '../../../widgets/risk_per_trade_field.dart';
+import '../../../widgets/manual_lot_fields.dart';
+import '../../../widgets/expectancy_card.dart';
 import '../providers/scalp_provider.dart';
 
 const _allSymbols    = ['BTC', 'ETH', 'SOL', 'XAUUSD', 'XAGUSD', 'GBPJPY', 'BNB', 'XRP', 'EURUSD', 'USDJPY'];
@@ -55,7 +58,6 @@ class ScalpScreen extends ConsumerStatefulWidget {
 
 class _ScalpScreenState extends ConsumerState<ScalpScreen> {
   bool _settingsExpanded = true;
-  bool _lotsExpanded     = true;
   bool _signalsExpanded  = false;   // journal des signaux : replié par défaut
 
   @override
@@ -94,6 +96,8 @@ class _ScalpScreenState extends ConsumerState<ScalpScreen> {
             const SizedBox(height: 8),
             _StatusCard(s: s, ntf: ntf),
             const SizedBox(height: 12),
+            const ExpectancyCard(bot: 'smc'),
+            const SizedBox(height: 12),
 
             // ── Error banner ──────────────────────────────────────────────
             if (s.error != null)
@@ -122,18 +126,6 @@ class _ScalpScreenState extends ConsumerState<ScalpScreen> {
             if (_settingsExpanded) ...[
               const SizedBox(height: 8),
               _SettingsCard(s: s, ntf: ntf),
-            ],
-            const SizedBox(height: 12),
-
-            // ── Lot sizes ─────────────────────────────────────────────────
-            _SectionHeader(
-              title: '📦 Lot Sizes (0 = auto)',
-              expanded: _lotsExpanded,
-              onTap: () => setState(() => _lotsExpanded = !_lotsExpanded),
-            ),
-            if (_lotsExpanded) ...[
-              const SizedBox(height: 8),
-              _LotSizesCard(s: s, ntf: ntf),
             ],
             const SizedBox(height: 12),
 
@@ -314,39 +306,25 @@ class _SettingsCard extends StatelessWidget {
       ),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
 
-        // Risk %
-        _SliderRow(
-          label: 'Risk %',
-          value: s.riskPercent,
-          min: 0.1, max: 3.0, divisions: 29,
-          display: '${s.riskPercent.toStringAsFixed(1)}%',
-          color: AppColors.success,
-          onChanged: ntf.setRisk,
+        // Risque par trade (2026-10-10) : remplace les lots fixes et le plafond
+        RiskPerTradeField(
+          inputKey: const Key('scalp_risk_input'),
+          value: s.riskPerTradePct,
+          onChanged: ntf.setRiskPerTrade,
+          note: 'Each trade is sized so that hitting its stop loses this share of the balance '
+              '(0.1% to 5%, type any value). If even the smallest lot would risk more, a buy may wait '
+              'for a limit entry close enough to the stop; otherwise the trade is skipped, never forced. '
+              'Press Apply Settings to send it. Guideline from the video: 0.25% to 2%.',
         ),
-
-        // Max risk per trade — comme dans l'onglet Vol. Profile
-        _SliderRow(
-          label: 'Max risk per trade',
-          value: (s.riskCapPct ?? 15).clamp(1, 50).toDouble(),
-          min: 1, max: 50, divisions: 49,
-          display: s.riskCapPct == null
-              ? 'default'
-              : '${s.riskCapPct!.toStringAsFixed(0)}% of balance',
-          color: AppColors.warning,
-          onChanged: ntf.setRiskCap,
+        // Lot manuel par symbole (2026-10-12) : vide = Auto, sinon ce lot exactement
+        ManualLotFields(
+          symbols: s.enabledSymbols,
+          lots: s.manualLots,
+          rules: s.lotRules,
+          onChanged: ntf.setManualLot,
+          safetyNote: 'Safety kept: a trade whose stop would lose more than 15% of the balance '
+              '(7% on forex) is refused, never resized. Press Apply Settings to send it.',
         ),
-        Row(children: [
-          Expanded(child: Text(
-            s.riskCapPct == null
-                ? 'Default: 15% for crypto & metals, 7% for forex. Move the slider to use one cap for every symbol.'
-                : 'A trade whose stop would lose more than this is skipped — market and limit entries.',
-            style: const TextStyle(color: AppColors.textHint, fontSize: 10))),
-          if (s.riskCapPct != null)
-            TextButton(
-              onPressed: ntf.resetRiskCap,
-              child: const Text('Use defaults', style: TextStyle(fontSize: 11)),
-            ),
-        ]),
         const SizedBox(height: 8),
 
         // Min Score
@@ -439,122 +417,6 @@ class _SettingsCard extends StatelessWidget {
             ),
           );
         }).toList()),
-      ]),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Lot sizes card
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _LotSizesCard extends StatelessWidget {
-  final ScalpState s;
-  final ScalpNotifier ntf;
-  const _LotSizesCard({required this.s, required this.ntf});
-
-  static const double _step = 0.01;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.cardBackground,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(children: [
-        ...s.enabledSymbols.map((sym) {
-          final current = s.lotSizes[sym] ?? 0.0;
-          return Padding(
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            child: Row(children: [
-
-              // Symbol name
-              SizedBox(
-                width: 72,
-                child: Text(sym, style: const TextStyle(
-                  color: AppColors.textPrimary,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 13,
-                )),
-              ),
-
-              // − button
-              GestureDetector(
-                onTap: () {
-                  final next = (current - _step).clamp(0.0, 100.0);
-                  ntf.setLotSize(sym, double.parse(next.toStringAsFixed(2)));
-                },
-                child: Container(
-                  width: 32, height: 32,
-                  decoration: BoxDecoration(
-                    color: AppColors.error.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Icon(Icons.remove, color: AppColors.error, size: 18),
-                ),
-              ),
-              const SizedBox(width: 10),
-
-              // Value display
-              Expanded(
-                child: Container(
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: AppColors.surface,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    current == 0 ? 'AUTO' : current.toStringAsFixed(2),
-                    style: TextStyle(
-                      color: current == 0 ? AppColors.textSecondary : AppColors.primary,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 14,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(width: 10),
-
-              // + button
-              GestureDetector(
-                onTap: () {
-                  final next = (current + _step).clamp(0.0, 100.0);
-                  ntf.setLotSize(sym, double.parse(next.toStringAsFixed(2)));
-                },
-                child: Container(
-                  width: 32, height: 32,
-                  decoration: BoxDecoration(
-                    color: AppColors.success.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: const Icon(Icons.add, color: AppColors.success, size: 18),
-                ),
-              ),
-              const SizedBox(width: 10),
-
-              // Reset to AUTO (long press hint)
-              GestureDetector(
-                onTap: () => ntf.setLotSize(sym, 0),
-                child: Text(
-                  'AUTO',
-                  style: TextStyle(
-                    color: current == 0
-                      ? AppColors.primary
-                      : AppColors.textHint,
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ),
-            ]),
-          );
-        }),
-        const SizedBox(height: 10),
-        const Text('Tap AUTO to reset to risk-based calculation',
-          style: TextStyle(color: AppColors.textHint, fontSize: 11)),
       ]),
     );
   }

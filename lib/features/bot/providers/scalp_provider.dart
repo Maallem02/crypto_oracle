@@ -1,7 +1,10 @@
+import 'package:dio/dio.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/api_constants.dart';
 import '../../../core/config/api_config.dart';
 import '../../../core/network/dio_client.dart';
+import '../../../widgets/manual_lot_fields.dart' show manualLotError;
+import 'vp_provider.dart' show LotRule;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -22,6 +25,15 @@ class ScalpState {
   // backend (15 % crypto et métaux, 7 % forex). Un trade dont le stop
   // coûterait plus est refusé — au marché comme en limite.
   final double? riskCapPct;
+  // Risque PAR TRADE en % du solde (2026-10-10, vidéo "4 concepts") : le lot est
+  // calculé par le backend depuis la distance au stop (sizing_mode = "risk").
+  // Les lots fixes ci-dessus ne servent plus. 0.1 à 5 %.
+  final double riskPerTradePct;
+  // Lot choisi à la main par symbole (2026-10-12) : absent = Auto (risque par
+  // trade ci-dessus), présent = ce lot exactement. Clé backend manual_lots.
+  final Map<String, double> manualLots;
+  // Minimum / pas / maximum du broker (lot_rules de /scalping/status).
+  final Map<String, LotRule> lotRules;
 
   // Live status
   final int tradesToday;
@@ -53,6 +65,9 @@ class ScalpState {
     },
     this.mlThreshold      = 0.62,
     this.riskCapPct,
+    this.riskPerTradePct  = 1.0,
+    this.manualLots       = const {},
+    this.lotRules         = const {},
     this.tradesToday      = 0,
     this.dailyPnl         = 0.0,
     this.lastScan,
@@ -77,6 +92,9 @@ class ScalpState {
     double? mlThreshold,
     double? riskCapPct,
     bool clearRiskCap = false,          // retour aux plafonds par symbole
+    double? riskPerTradePct,
+    Map<String, double>? manualLots,
+    Map<String, LotRule>? lotRules,
     int? tradesToday,
     double? dailyPnl,
     String? lastScan,
@@ -98,6 +116,9 @@ class ScalpState {
     lotSizes:          lotSizes          ?? this.lotSizes,
     mlThreshold:       mlThreshold       ?? this.mlThreshold,
     riskCapPct:        clearRiskCap ? null : (riskCapPct ?? this.riskCapPct),
+    riskPerTradePct:   riskPerTradePct   ?? this.riskPerTradePct,
+    manualLots:        manualLots        ?? this.manualLots,
+    lotRules:          lotRules          ?? this.lotRules,
     tradesToday:       tradesToday       ?? this.tradesToday,
     dailyPnl:          dailyPnl          ?? this.dailyPnl,
     lastScan:          lastScan          ?? this.lastScan,
@@ -130,6 +151,9 @@ class ScalpState {
     lotSizes:          lotSizes,
     mlThreshold:       mlThreshold,
     riskCapPct:        riskCapPct,
+    riskPerTradePct:   riskPerTradePct,
+    manualLots:        manualLots,
+    lotRules:          lotRules,
     tradesToday:       tradesToday,
     dailyPnl:          dailyPnl,
     lastScan:          lastScan,
@@ -153,8 +177,26 @@ class ScalpState {
         if (e.value > 0) e.key: e.value
     },
     'ml_threshold':       mlThreshold,
-    'risk_cap_pct':       riskCapPct,     // null = plafonds par symbole
+    'risk_cap_pct':       riskCapPct,     // null = plafonds par symbole (mode lots fixes)
+    'sizing_mode':        'risk',         // lot calculé depuis le risque par trade…
+    'risk_per_trade_pct': riskPerTradePct,
+    'manual_lots':        manualLots,     // …sauf sur les symboles où un lot est tapé
   };
+
+  /// Lots manuels que le broker refuserait — vérifié AVANT d'arrêter / relancer.
+  List<String> lotProblems() => [
+    for (final e in manualLots.entries)
+      if (manualLotError(e.value, lotRules[e.key]) case final String err) '${e.key}: $err',
+  ];
+}
+
+String _errText(Object e) {
+  if (e is DioException) {
+    final data = e.response?.data;
+    if (data is Map && data['detail'] != null) return data['detail'].toString();
+    return e.message ?? e.toString();
+  }
+  return e.toString();
 }
 
 // ── Notifier ──────────────────────────────────────────────────────────────────
@@ -192,13 +234,19 @@ class ScalpNotifier extends StateNotifier<ScalpState> {
       final d = r.data as Map<String, dynamic>;
       final s = d['settings'] as Map<String, dynamic>? ?? {};
       final rawLots = s['lot_sizes'] as Map<String, dynamic>? ?? {};
+      final rules = <String, LotRule>{};
+      ((d['lot_rules'] as Map?) ?? {}).forEach((k, v) {
+        final m = (v as Map).cast<String, dynamic>();
+        rules[k as String] = LotRule((m['min_lot'] as num).toDouble(), (m['lot_step'] as num).toDouble(),
+            (m['max_lot'] as num).toDouble());
+      });
       final live = state.withLive(
         isRunning:         d['running']        as bool?  ?? false,
         tradesToday:       d['trades_today']   as int?   ?? 0,
         dailyPnl:          (d['daily_pnl']     as num?)?.toDouble() ?? 0.0,
         lastScan:          d['last_scan']      as String?,
         stoppedReason:     d['stopped_reason'] as String?,
-      );
+      ).copyWith(lotRules: rules.isEmpty ? null : rules);
       if (state.dirty) {                   // saisie en cours : on n'y touche pas
         state = live;
         return;
@@ -217,6 +265,9 @@ class ScalpNotifier extends StateNotifier<ScalpState> {
         mlThreshold:       (s['ml_threshold'] as num?)?.toDouble() ?? state.mlThreshold,
         riskCapPct:        (s['risk_cap_pct'] as num?)?.toDouble(),
         clearRiskCap:      s['risk_cap_pct'] == null,
+        riskPerTradePct:   (s['risk_per_trade_pct'] as num?)?.toDouble() ?? state.riskPerTradePct,
+        manualLots:        ((s['manual_lots'] as Map?) ?? {})
+            .map((k, v) => MapEntry(k as String, (v as num).toDouble())),
       );
     } catch (e) {
       state = state.copyWith(error: e.toString());
@@ -226,12 +277,29 @@ class ScalpNotifier extends StateNotifier<ScalpState> {
   }
 
   Future<void> start() async {
+    // Un lot manuel que le broker refuserait : rien n'est envoyé (2026-10-12).
+    final problems = state.lotProblems();
+    if (problems.isNotEmpty) {
+      state = state.copyWith(error: 'Not sent — fix the lot: ${problems.join('; ')}');
+      return;
+    }
     try {
-      // Broadcast START to all accounts simultaneously
-      await Future.wait(
-        _allDios.map((dio) => dio.post('/trading/scalping/start',
-            data: state.toSettings()).catchError((_) {})),
-      );
+      // Broadcast START to all accounts simultaneously. Les erreurs des comptes
+      // secondaires restent ignorées ; celle du compte principal est AFFICHÉE
+      // (avant : avalée, l'app montrait « en marche » alors que le backend
+      // avait refusé le démarrage).
+      final dios = _allDios;
+      final errors = await Future.wait([
+        for (var i = 0; i < dios.length; i++)
+          (dios[i].post('/trading/scalping/start', data: state.toSettings()) as Future)
+              .then<String?>((_) => null)
+              .catchError((Object e) => i == 0 ? _errText(e) : null),
+      ]);
+      if (errors.first != null) {
+        state = state.copyWith(error: 'Start refused by the bot: ${errors.first}');
+        await refreshStatus();                       // affiche l'état réel (arrêté)
+        return;
+      }
       state = state.copyWith(isRunning: true, error: null, dirty: false);   // réglages envoyés
     } catch (e) {
       state = state.copyWith(error: e.toString());
@@ -252,6 +320,12 @@ class ScalpNotifier extends StateNotifier<ScalpState> {
   }
 
   Future<void> applySettings() async {
+    // Vérifié AVANT le stop : un lot refusé ne doit pas laisser le bot arrêté.
+    final problems = state.lotProblems();
+    if (problems.isNotEmpty) {
+      state = state.copyWith(error: 'Not applied — fix the lot: ${problems.join('; ')}');
+      return;
+    }
     if (state.isRunning) {
       await stop();
       await start();
@@ -288,6 +362,20 @@ class ScalpNotifier extends StateNotifier<ScalpState> {
   void setMlThreshold(double v)    => state = state.copyWith(mlThreshold: v, dirty: true);
   void setRiskCap(double v)        => state = state.copyWith(riskCapPct: v.roundToDouble(), dirty: true);
   void resetRiskCap()              => state = state.copyWith(clearRiskCap: true, dirty: true);
+
+  /// Risque par trade, 0.1 à 5 %, arrondi à 0.01. Retourne la valeur retenue.
+  double setRiskPerTrade(double v) {
+    final r = (v.clamp(0.1, 5.0) * 100).round() / 100;
+    state = state.copyWith(riskPerTradePct: r, dirty: true);
+    return r;
+  }
+
+  /// Lot manuel d'un symbole ; null = retour en Auto (risque par trade).
+  void setManualLot(String symbol, double? lot) {
+    final map = Map<String, double>.from(state.manualLots);
+    lot == null || lot <= 0 ? map.remove(symbol) : map[symbol] = lot;
+    state = state.copyWith(manualLots: map, dirty: true);
+  }
 
   void setLotSize(String symbol, double lot) {
     final map = Map<String, double>.from(state.lotSizes);
