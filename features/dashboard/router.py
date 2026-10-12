@@ -22,3 +22,13 @@ def dashboard_news():
         return service.news()
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"news unavailable: {e}")
+
+
+@router.get("/expectancy")
+def dashboard_expectancy(days: int = 0):
+    """Espérance réelle par bot (R par trade, taux de gain vs seuil de rentabilité,
+    plage à 90 %, frais, risque par trade). days = 0 : tout l'historique."""
+    try:
+        return service.expectancy(days)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"expectancy unavailable: {e}")

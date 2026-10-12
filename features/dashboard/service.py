@@ -349,3 +349,163 @@ def news() -> dict:
             "calendar_note": ("Forex Factory publishes each week's calendar on Sunday — "
                               "on Saturdays the list can be empty."),
             "headlines": _headlines()[:12]}
+
+
+# ── Espérance par bot (2026-10-10) ───────────────────────────────────────────
+# Demande utilisateur après la vidéo "4 concepts mathématiques" : l'espérance
+# (résultat moyen par trade, frais compris, sur un GRAND échantillon) est le seul
+# chiffre qui dit si un bot gagne de l'argent. Calculée sur les trades RÉELS du
+# compte : R = résultat / risque au stop initial (le SL de l'ordre d'entrée).
+EXP_BOTS = {BOT_MAGIC: ("smc", "Scalping"), VP_MAGIC: ("vp", "Volume Profile"), DT_MAGIC: ("dt", "Daily Trend")}
+# Ce que les tests sur l'historique ont donné (pour comparer au réel)
+EXP_TESTED = {
+    "smc": "Replays since July: entries no better than random (about -0.03R to -0.08R).",
+    "vp": "3-year replay (BTC/ETH, Binance): -0.03R per trade after spread; gold 3 years: +0.02R (not proven).",
+    "dt": "Exness daily 2018-2026, long-only BTC+ETH: +1.66R per trade over 91 trades.",
+}
+SAMPLE_TARGET = 100
+_exp_cache = {"t": 0.0, "days": None, "data": None}
+_exp_lock = threading.Lock()
+
+
+def _bootstrap(x, n=2000, seed=11):
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    arr = np.asarray(x, float)
+    means = rng.choice(arr, size=(n, len(arr)), replace=True).mean(axis=1)
+    return float(np.percentile(means, 5)), float(np.percentile(means, 95))
+
+
+def _journal_stops() -> dict:
+    """Stop initial noté par les bots eux-mêmes, par ticket (= n° de position).
+    Utilisé quand le registre du broker n'a pas de stop : Exness efface SL/TP de
+    l'ordre LIMITE une fois exécuté (128 entrées limite sur 128 depuis juillet),
+    alors que le bot l'avait envoyé et que la position l'avait (vérifié le
+    2026-10-12 : le XAG du jour fermé à son stop). Sans ça, ces trades n'avaient
+    pas de R et sortaient de l'espérance."""
+    from core.database import get_db
+    out = {}
+    try:
+        conn = get_db()
+        for sql in ("SELECT ticket, sl FROM trade_signals WHERE ticket IS NOT NULL AND sl IS NOT NULL",
+                    "SELECT ticket, sl FROM vp_log WHERE status='taken' AND ticket IS NOT NULL AND sl IS NOT NULL",
+                    "SELECT ticket, sl FROM dt_log WHERE event='entry' AND ticket IS NOT NULL AND sl IS NOT NULL"):
+            try:
+                for t, s in conn.execute(sql):
+                    if s:
+                        out[int(t)] = float(s)
+            except Exception:
+                pass                                    # table absente (base de test)
+        conn.close()
+    except Exception as e:
+        print(f"[EXPECTANCY] journal stops unavailable: {e}")
+    return out
+
+
+def expectancy(days: int = 0) -> dict:
+    """Espérance réelle de chaque bot. days = 0 : tout l'historique du compte."""
+    with _exp_lock:
+        if _exp_cache["data"] is not None and _exp_cache["days"] == days and time.time() - _exp_cache["t"] < 300:
+            return _exp_cache["data"]
+        ensure_mt5()
+        now = datetime.now(UTC)
+        start = now - timedelta(days=days) if days else datetime(2015, 1, 1, tzinfo=UTC)
+        acct = mt5.account_info()
+        deals = mt5.history_deals_get(datetime(2015, 1, 1, tzinfo=UTC), now + timedelta(hours=3)) or []
+        net = lambda d: d.profit + d.commission + d.swap + getattr(d, "fee", 0.0)
+        later = sorted(((d.time, net(d)) for d in deals), key=lambda x: x[0])
+        by_pos = {}
+        for d in deals:
+            if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL):
+                by_pos.setdefault(d.position_id, []).append(d)
+        spread_cache = {}
+        jstops = _journal_stops()
+        rows = {k: [] for k, _ in EXP_BOTS.values()}
+        for pid, ds in by_pos.items():
+            ins = [d for d in ds if d.entry == mt5.DEAL_ENTRY_IN]
+            outs = [d for d in ds if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY)]
+            if not ins or not outs or sum(d.volume for d in outs) + 1e-9 < sum(d.volume for d in ins):
+                continue
+            i = ins[0]
+            if i.magic not in EXP_BOTS or i.time < start.timestamp():
+                continue
+            bot = EXP_BOTS[i.magic][0]
+            buy = i.type == mt5.DEAL_TYPE_BUY
+            vol = sum(d.volume for d in ins)
+            o = next(iter(mt5.history_orders_get(ticket=i.order) or []), None)
+            sl0 = o.sl if o is not None else 0.0
+            from_journal = False
+            if not sl0:                                 # ordre limite exécuté : stop du journal du bot
+                js = jstops.get(pid) or jstops.get(i.order)
+                if js and ((buy and js < i.price) or (not buy and js > i.price)):
+                    sl0, from_journal = js, True
+            pnl = sum(net(d) for d in ds)
+            costs = sum(d.commission + d.swap + getattr(d, "fee", 0.0) for d in ds)
+            risk = None
+            if sl0:
+                loss = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL,
+                                             i.symbol, vol, i.price, sl0)
+                risk = -loss if loss is not None and loss < 0 else None
+            if i.symbol not in spread_cache:
+                tk = mt5.symbol_info_tick(i.symbol)
+                one = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY, i.symbol, 1.0, tk.bid, tk.ask) if tk else None
+                spread_cache[i.symbol] = one or 0.0
+            bal_at = (acct.balance if acct else 0.0) - sum(x for t, x in later if t >= i.time)
+            rows[bot].append({"pnl": pnl, "costs": costs, "R": pnl / risk if risk else None,
+                              "risk_pct": 100 * risk / bal_at if risk and bal_at > 0 else None,
+                              "spread": spread_cache[i.symbol] * vol, "t": i.time,
+                              "journal_sl": from_journal and risk is not None})
+        out = {}
+        for magic, (bot, name) in EXP_BOTS.items():
+            rs = rows[bot]
+            R = [r["R"] for r in rs if r["R"] is not None]
+            n = len(R)
+            d = {"bot": bot, "name": name, "trades": len(rs), "trades_with_r": n,
+                 "r_from_journal": sum(1 for r in rs if r["journal_sl"]),
+                 "sample_target": SAMPLE_TARGET, "tested": EXP_TESTED.get(bot)}
+            if rs:
+                d.update(first=datetime.fromtimestamp(min(r["t"] for r in rs), UTC).isoformat(),
+                         total_usd=round(sum(r["pnl"] for r in rs), 2),
+                         expectancy_usd=round(sum(r["pnl"] for r in rs) / len(rs), 2),
+                         commission_swap_usd=round(sum(r["costs"] for r in rs), 2),
+                         spread_est_usd=round(sum(r["spread"] for r in rs), 2))
+                rp = sorted(r["risk_pct"] for r in rs if r["risk_pct"] is not None)
+                if rp:                       # 90e centile plutôt que le max : un trade pris sur un solde
+                                             # presque nul donnait 700 % et ne disait rien d'utile
+                    d.update(risk_pct_median=round(rp[len(rp) // 2], 1),
+                             risk_pct_p90=round(rp[min(len(rp) - 1, int(0.9 * len(rp)))], 1))
+            if n:
+                w = [x for x in R if x > 0]
+                l = [x for x in R if x <= 0]
+                avg_w = sum(w) / len(w) if w else 0.0
+                avg_l = -sum(l) / len(l) if l else 0.0
+                payoff = avg_w / avg_l if avg_l > 0 else None
+                lo, hi = _bootstrap(R) if n >= 5 else (None, None)
+                exp_r = sum(R) / n
+                d.update(win_rate=round(100 * len(w) / n, 1), avg_win_r=round(avg_w, 2), avg_loss_r=round(avg_l, 2),
+                         payoff=round(payoff, 2) if payoff else None,
+                         breakeven_win_rate=round(100 / (1 + payoff), 1) if payoff else None,
+                         expectancy_r=round(exp_r, 3),
+                         range_low_r=round(lo, 3) if lo is not None else None,
+                         range_high_r=round(hi, 3) if hi is not None else None)
+                if n < 30:
+                    d["verdict"] = "too_early"
+                elif hi is not None and hi < 0:
+                    d["verdict"] = "losing"
+                elif lo is not None and lo > 0:
+                    d["verdict"] = "winning"
+                else:
+                    d["verdict"] = "not_proven"
+            else:
+                d["verdict"] = "no_trades"
+            out[bot] = d
+        data = {"generated": now.isoformat(), "days": days, "bots": out,
+                "notes": {"r": "1R = what a trade risked at its initial stop. Limit-order trades: the broker "
+                               "erases the stop from the filled order, so it is taken from the bot's own journal.",
+                          "breakeven": "Breakeven win rate = 1 / (1 + average win / average loss).",
+                          "range": "90% range of the expectancy from resampling the trades: "
+                                   "the true value is very likely inside it.",
+                          "spread": "Spread cost estimated with today's spreads.",
+                          "risk": "The video's guideline: 0.25% to 2% of the balance per trade."}}
+        _exp_cache.update(t=time.time(), days=days, data=data)
+        return data

@@ -5,8 +5,10 @@ Part 5: READ-ONLY Exness daily history: the live decision code, run day by day
 with a simulated broker, must reproduce the EXACT trades of the tested study
 code (trend_robustness_study.donchian, long-only, next-day-open entry)."""
 import ast
+import json
 import os
 import sys
+import tempfile
 from datetime import datetime, timezone
 from types import SimpleNamespace as NS
 
@@ -45,8 +47,9 @@ def make_bars(closes, rng_width=1.0):
 
 print("1. SETTINGS")
 R.dt_state["settings"] = dict(R.DEFAULT_SETTINGS)
-check("default: BTC + ETH, 2% risk, bot OFF on first start",
-      R.DEFAULT_SETTINGS == {"symbols": ["BTC", "ETH"], "risk_pct": 2.0} and R._load_state.__defaults__ is None)
+check("default: BTC + ETH, 2% risk, 3% shared crypto cap, bot OFF on first start",
+      R.DEFAULT_SETTINGS == {"symbols": ["BTC", "ETH"], "risk_pct": 2.0, "max_crypto_risk_pct": 3.0}
+      and R._load_state.__defaults__ is None)
 for bad, lab in ((0.05, "0.05%"), (6, "6%"), ("2", "'2' (text)"), (True, "true")):
     try:
         R.update_settings({"risk_pct": bad})
@@ -69,6 +72,27 @@ except R.SettingsError:
 check("all-or-nothing: bad symbols leave the risk unchanged", R.dt_state["settings"]["risk_pct"] == 2.25)
 R.update_settings({"symbols": ["ETH"]})
 check("symbols = ETH only accepted", R.dt_state["settings"]["symbols"] == ["ETH"])
+for bad, lab in ((0.05, "0.05%"), (11, "11%"), ("3", "'3' (text)"), (True, "true")):
+    try:
+        R.update_settings({"max_crypto_risk_pct": bad})
+        check(f"crypto cap {lab} refused", False)
+    except R.SettingsError as e:
+        check(f"crypto cap {lab} refused", True, str(e))
+R.update_settings({"max_crypto_risk_pct": 4.5})
+check("crypto cap 4.5% accepted", R.dt_state["settings"]["max_crypto_risk_pct"] == 4.5)
+try:
+    R.update_settings({"max_crypto_risk_pct": 2, "risk_pct": 9})
+except R.SettingsError:
+    pass
+check("all-or-nothing: a bad risk leaves the cap unchanged", R.dt_state["settings"]["max_crypto_risk_pct"] == 4.5)
+real_file, tmp_dir = R._STATE_FILE, tempfile.mkdtemp()
+R._STATE_FILE = os.path.join(tmp_dir, "dt_state.json")
+with open(R._STATE_FILE, "w", encoding="utf-8") as fh:
+    json.dump({"enabled": True, "settings": {"symbols": ["BTC", "ETH"], "risk_pct": 5.0}}, fh)
+old = R._load_state()
+R._STATE_FILE = real_file
+check("a state file saved before the cap existed: keeps its 5% risk, gets the 3% cap",
+      old["settings"]["risk_pct"] == 5.0 and old["settings"]["max_crypto_risk_pct"] == 3.0, str(old["settings"]))
 R.dt_state["settings"] = dict(R.DEFAULT_SETTINGS)
 
 print("\n2. POSITION SIZE (risk_pct of the balance if the stop is hit)")
@@ -107,7 +131,7 @@ class FakeMT5:
     ORDER_FILLING_IOC, ORDER_FILLING_FOK, ORDER_FILLING_RETURN, TRADE_RETCODE_DONE = 1, 0, 2, 10009
 
     def copy_rates_from_pos(self, sym, tf, a, n):
-        return STATE["bars"]
+        return STATE.get("bars_by", {}).get(sym, STATE["bars"])
 
     def positions_get(self, symbol=None, ticket=None):
         return [p for p in STATE["positions"] if (symbol is None or p.symbol == symbol)
@@ -131,6 +155,10 @@ class FakeMT5:
 
     def order_send(self, req):
         sent.append(req)
+        if STATE.get("fill"):                                         # part 4b: the order becomes a position
+            STATE["positions"].append(NS(symbol=req["symbol"], magic=req["magic"], ticket=800 + len(sent),
+                                         volume=req["volume"], time=int(NOW.timestamp()),
+                                         price_open=req["price"], sl=req["sl"]))
         return NS(retcode=10009, order=777, price=req["price"], comment="")
 
     def last_error(self):
@@ -140,7 +168,13 @@ class FakeMT5:
 R.mt5 = FakeMT5()
 R.ensure_mt5 = R._ensure_ready = R.update_outcomes = lambda: None
 R._log = lambda sym, ev, **k: logged.append((sym, ev, k.get("reason")))
-R.close_partial = lambda p, v, c: (closed.append((p.symbol, v, c)), {"success": True, "price": 90})[1]
+def fake_close(p, v, c):
+    closed.append((p.symbol, v, c))
+    STATE["positions"] = [x for x in STATE["positions"] if x is not p]
+    return {"success": True, "price": 90}
+
+
+R.close_partial = fake_close
 
 
 def scan():
@@ -197,6 +231,87 @@ scan()
 check("the bot's own 10-day exit filled after midnight does NOT block an entry on that candle",
       sorted(r["symbol"] for r in sent) == ["BTCUSDm", "ETHUSDm"])
 STATE["deals"] = []
+
+print("\n4b. SHARED CRYPTO RISK CAP (BTC + ETH open together = one bet)")
+check("cap 3%, nothing open -> next trade gets the full 2%", R.risk_left(2, 3, 0) == 2)
+check("cap 3%, 2% already open -> next trade gets 1%", abs(R.risk_left(2, 3, 2) - 1) < 1e-12)
+check("cap 3%, 3% open -> nothing left", R.risk_left(2, 3, 3) == 0)
+check("cap 4% (= today without a cap), 2% open -> full 2%", R.risk_left(2, 4, 2) == 2)
+check("risk 5% with cap 3% -> a single trade is limited to 3%", R.risk_left(5, 3, 0) == 3)
+
+
+def risk_pct_of(req):
+    return 100 * (req["price"] - req["sl"]) * req["volume"] * (100 if req["symbol"].startswith("BTC") else 1) / STATE["balance"]
+
+
+def pos(sym, risk_usd, sl_ok=True, bars=None):
+    """an open DT position whose stop loses risk_usd (fake prices: BTC $100/pt/lot, ETH $1)"""
+    vol = 0.02 if sym == "BTC" else 2.0
+    mult = 100 if sym == "BTC" else 1
+    return NS(symbol=sym + "USDm", magic=234200, ticket=900 + len(STATE["positions"]), volume=vol,
+              time=int((bars if bars is not None else b)["time"][-5]), price_open=112.0,
+              sl=(112.0 - risk_usd / (vol * mult)) if sl_ok else 0.0)
+
+
+STATE.update(balance=10000.0, positions=[], deals=[], bars=b, fill=True)
+R.dt_state.update(enabled=True, last_bar={})
+R.dt_state["settings"] = dict(R.DEFAULT_SETTINGS)
+scan()
+rk = {r["symbol"][:3]: risk_pct_of(r) for r in sent}
+check("both break out the same day: BTC first gets ~2%, ETH only what is left of the 3% cap (~1%)",
+      [r["symbol"] for r in sent] == ["BTCUSDm", "ETHUSDm"] and 1.8 < rk["BTC"] <= 2.0 + 1e-9
+      and 0.8 < rk["ETH"] <= 3.0 - rk["BTC"] + 1e-9 and sum(rk.values()) <= 3.0 + 1e-9,
+      str({k: round(v, 3) for k, v in rk.items()}))
+check("the ETH entry is journalled with the reason it is smaller",
+      any(s_ == "ETH" and ev == "entry" and "crypto cap" in (why or "") for s_, ev, why in logged), str(logged))
+
+STATE["positions"] = [pos("BTC", 200.0)]                     # BTC open, its stop loses $200 = 2%
+R.dt_state.update(last_bar={})
+scan()
+check("BTC already open at 2% -> ETH breakout sized to the 1% left",
+      [r["symbol"] for r in sent] == ["ETHUSDm"] and 0.8 < risk_pct_of(sent[0]) <= 1.0 + 1e-9,
+      f"{[r['symbol'] for r in sent]} {risk_pct_of(sent[0]) if sent else None}")
+
+STATE["positions"] = [pos("BTC", 200.0)]
+R.update_settings({"max_crypto_risk_pct": 2.0})
+R.dt_state.update(last_bar={})
+scan()
+check("cap 2% and BTC open at 2% -> ETH skipped, 'crypto risk cap full' journalled",
+      not sent and any(s_ == "ETH" and ev == "skip" and "cap full" in (why or "") for s_, ev, why in logged), str(logged))
+
+STATE["positions"] = [pos("BTC", 200.0, sl_ok=False)]
+R.update_settings({"max_crypto_risk_pct": 3.0})
+R.dt_state.update(last_bar={})
+scan()
+check("BTC open WITHOUT a stop (unlimited loss) -> counts as the whole cap, ETH skipped",
+      not sent and any("NO stop" in (why or "") for _, _, why in logged), str(logged))
+
+STATE["positions"] = [pos("BTC", 200.0)]
+R.update_settings({"max_crypto_risk_pct": 4.0})
+R.dt_state.update(last_bar={})
+scan()
+check("cap 4% (= no link at 2% each, as before) -> ETH gets the full 2%",
+      [r["symbol"] for r in sent] == ["ETHUSDm"] and 1.8 < risk_pct_of(sent[0]) <= 2.0 + 1e-9)
+
+STATE["bars_by"] = {"BTCUSDm": b, "ETHUSDm": bd}            # BTC breaks out, ETH closes under its 10-day low
+STATE["positions"] = [pos("ETH", 200.0, bars=bd)]
+R.update_settings({"max_crypto_risk_pct": 3.0})
+R.dt_state.update(last_bar={})
+scan()
+check("same scan: ETH exits and BTC breaks out -> the exit is done FIRST, BTC gets the full 2%",
+      closed and closed[0][0] == "ETHUSDm" and [r["symbol"] for r in sent] == ["BTCUSDm"]
+      and 1.8 < risk_pct_of(sent[0]) <= 2.0 + 1e-9, f"{closed} {[(r['symbol'], risk_pct_of(r)) for r in sent]}")
+
+STATE.update(positions=[], fill=False)
+STATE.pop("bars_by")
+R.update_settings({"risk_pct": 5.0, "max_crypto_risk_pct": 3.0})
+R.dt_state.update(last_bar={})
+scan()
+rk = {r["symbol"][:3]: risk_pct_of(r) for r in sent}
+check("risk 5% with cap 3% -> BTC limited to 3% (and ETH, sized alone here, also 3%)",
+      2.7 < rk.get("BTC", 0) <= 3.0 + 1e-9 and 2.7 < rk.get("ETH", 0) <= 3.0 + 1e-9, str(rk))
+R.dt_state["settings"] = dict(R.DEFAULT_SETTINGS)
+STATE["balance"] = 3000.0
 
 print("\n5. REAL HISTORY (read-only): live decisions == the tested study, trade for trade")
 R.mt5, R.ensure_mt5 = REAL_MT5, REAL_ENSURE

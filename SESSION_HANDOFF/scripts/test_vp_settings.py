@@ -87,7 +87,9 @@ reset()
 for label, patch, needle in [
     ("ETH lot below the broker minimum (0.05 < 0.10)", {"lot_sizes": {"ETH": 0.05}}, "minimum"),
     ("symbol the broker does not offer", {"symbols": ["BTC", "SOL"]}, "not available"),
-    ("enabling a symbol with no lot size", {"symbols": ["BTC", "XAUUSD"]}, "set a lot size"),
+    # old fixed-lot mode only: in % risk mode (default since 10/10) lots are not used
+    ("fixed-lot mode: enabling a symbol with no lot size", {"sizing_mode": "fixed", "symbols": ["BTC", "XAUUSD"]},
+     "set a lot size"),
     ("risk cap 80% (max 50%)", {"risk_cap_pct": 80}, "between"),
     ("daily loss -5%", {"daily_loss_pct": -5}, "between"),
     ("unknown setup name", {"setups": {"magic_setup": True}}, "setups must"),

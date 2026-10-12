@@ -45,7 +45,7 @@ import MetaTrader5 as mt5
 
 from core.database import get_db
 from features.news.calendar import is_news_blocked, upcoming_high_event
-from features.trading.executor import SYMBOL_MAP, close_partial, place_trade
+from features.trading.executor import SYMBOL_MAP, close_partial, place_trade, size_by_risk
 from features.trading.mt5_client import ensure_mt5
 from features.trading.risk_manager import VP_MAGIC
 from features.volume_profile.profile import compute_profile
@@ -117,10 +117,26 @@ DEFAULT_SETTINGS = {
     # 8R, série perdante 11 -> 8. Avec le filtre spread : +38R, DD 5R, série 5
     # (2e moitié seule : +8R DD 5R contre +9R DD 11R). Ne touche pas les autres setups.
     "first_per_edge": True,
+    # Taille en % de risque (2026-10-10, vidéo "4 concepts mathématiques",
+    # demande utilisateur) : chaque trade VP risque risk_pct % du solde ; le lot
+    # vient de la distance au stop (arrondi vers le bas). Si même le lot minimum
+    # risque plus, le trade est refusé. "fixed" = anciens lots par symbole
+    # (lot_sizes + risk_cap_pct). Mesure réelle avant le changement : risque
+    # médian 5.5 % par trade, max 27.6 %, espérance -0.23R sur 47 trades.
+    "sizing_mode": "risk",
+    "risk_pct": 1.0,
+    # Lot choisi à la main, par symbole (2026-10-12, demande utilisateur : « le bot
+    # choisit le lot si je n'en choisis pas, mais respecte le lot que je donne »).
+    # Absent = automatique (risk_pct). Un lot donné est utilisé TEL QUEL, avec le
+    # plafond de sécurité risk_cap_pct du bot VP (au-delà : trade refusé, jamais
+    # réduit). Distinct des anciens lot_sizes pour qu'aucun ancien lot ne se
+    # réactive sans avoir été retapé.
+    "manual_lots": {},
 }
 NEWS_CLOSE_RANGE = (0, 60)
 MIN_ROOM_RANGE = (0.0, 5.0)
 MAX_SPREAD_RANGE = (0.0, 50.0)
+RISK_PCT_RANGE = (0.1, 5.0)
 RISK_CAP_RANGE = (1.0, 50.0)
 DAILY_LOSS_RANGE = (0.0, 50.0)
 MAX_PER_SYMBOL_RANGE = (1, 5)
@@ -157,7 +173,8 @@ def _load_state() -> tuple:
     saved = d.get("settings") or {}
     for k in ("symbols", "lot_sizes", "risk_cap_pct", "daily_loss_pct",
               "max_per_symbol", "same_direction", "news_pause", "min_room_r",
-              "news_close_before_min", "max_spread_pct", "first_per_edge"):
+              "news_close_before_min", "max_spread_pct", "first_per_edge", "sizing_mode", "risk_pct",
+              "manual_lots"):
         if k in saved:
             settings[k] = saved[k]
     settings["setups"] = {**DEFAULT_SETTINGS["setups"], **(saved.get("setups") or {})}
@@ -245,6 +262,33 @@ def update_settings(patch: dict) -> dict:
                 else:
                     new["lot_sizes"][ku] = v
 
+    if "manual_lots" in patch:                          # vide / 0 / null = automatique
+        lots = patch["manual_lots"]
+        if not isinstance(lots, dict):
+            errors.append("manual_lots must be an object")
+        else:
+            new["manual_lots"] = {}
+            for k, v in lots.items():
+                ku = str(k).upper()
+                if v is None or v == "" or v == 0:
+                    continue
+                info = avail.get(ku)
+                if info is None:
+                    errors.append(f"lot for a symbol this broker does not offer: {ku}")
+                    continue
+                if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+                    errors.append(f"{ku}: the lot must be a positive number (or empty for auto)")
+                    continue
+                step = info["lot_step"] or 0.01
+                if v < info["min_lot"] - 1e-9:
+                    errors.append(f"{ku}: lot {v:g} is below the broker minimum of {info['min_lot']:g}")
+                elif v > info["max_lot"] + 1e-9:
+                    errors.append(f"{ku}: lot {v:g} is above the broker maximum of {info['max_lot']:g}")
+                elif abs(v / step - round(v / step)) > 1e-6:
+                    errors.append(f"{ku}: lot {v:g} is not a multiple of the broker step {step:g}")
+                else:
+                    new["manual_lots"][ku] = round(float(v), 6)
+
     for key, (lo, hi) in (("risk_cap_pct", RISK_CAP_RANGE),
                           ("daily_loss_pct", DAILY_LOSS_RANGE)):
         if key in patch:
@@ -300,6 +344,22 @@ def update_settings(patch: dict) -> dict:
         else:
             new["max_spread_pct"] = round(float(v), 1)
 
+    if "sizing_mode" in patch:
+        if patch["sizing_mode"] not in ("risk", "fixed"):
+            errors.append("sizing_mode must be 'risk' or 'fixed'")
+        else:
+            new["sizing_mode"] = patch["sizing_mode"]
+
+    if "risk_pct" in patch:
+        v = patch["risk_pct"]
+        lo, hi = RISK_PCT_RANGE
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            errors.append("risk_pct must be a number")
+        elif not lo <= float(v) <= hi:
+            errors.append(f"risk_pct must be between {lo:g} and {hi:g} %")
+        else:
+            new["risk_pct"] = round(float(v), 2)
+
     if "first_per_edge" in patch:
         if not isinstance(patch["first_per_edge"], bool):
             errors.append("first_per_edge must be true or false")
@@ -324,7 +384,7 @@ def update_settings(patch: dict) -> dict:
             new["setups"].update({k: bool(v) for k, v in st.items()})
 
     missing = [s for s in new["symbols"] if not new["lot_sizes"].get(s)]
-    if missing:
+    if missing and new.get("sizing_mode", "fixed") == "fixed":
         errors.append(f"set a lot size for: {', '.join(missing)}")
     if errors:
         raise SettingsError("; ".join(errors))
@@ -338,6 +398,7 @@ def update_settings(patch: dict) -> dict:
           f"news close={new.get('news_close_before_min', 15)}min "
           f"max spread={new.get('max_spread_pct', 10.0)}% "
           f"first per edge={new.get('first_per_edge', True)} "
+          f"sizing={new.get('sizing_mode', 'fixed')} risk={new.get('risk_pct', 1.0)}% "
           f"setups={new['setups']}")
     return vp_status()
 
@@ -736,11 +797,27 @@ def vp_scan() -> None:
                 _log(symbol, "rejected", sig=sig, prof=prof, prev_day=prev_day, reason=why)
                 continue
 
+        # taille : lot manuel du symbole (respecté tel quel, plafond risk_cap_pct),
+        # sinon % de risque (défaut), sinon anciens lots fixes (voir DEFAULT_SETTINGS)
+        lot, cap_here = float(lots.get(su, 0) or 0), cap
+        manual = float((s.get("manual_lots") or {}).get(su, 0) or 0)
+        if manual > 0:
+            lot = manual
+        elif s.get("sizing_mode", "fixed") == "risk":
+            pct = float(s.get("risk_pct", 1.0))
+            px = (tick.ask if sig.direction == "buy" else tick.bid) if tick is not None else sig.entry
+            lot, info = size_by_risk(mt5sym, sig.direction, px, sig.sl, pct)
+            if lot is None:
+                why = info.get("reason", "position size unavailable")
+                print(f"{tag}: not taken — {why}")
+                _log(symbol, "rejected", sig=sig, prof=prof, prev_day=prev_day, reason=why)
+                continue
+            cap_here = pct * 1.10 / 100.0               # marge : le prix bouge avant l'envoi
         res = place_trade(
             symbol=symbol, action=sig.direction, entry=sig.entry, sl=sig.sl, tp1=sig.tp,
-            confidence=0.5, fixed_lot=float(lots.get(su, 0) or 0),
+            confidence=0.5, fixed_lot=lot,
             magic=VP_MAGIC, comment=f"VP-{SETUP_CODE[sig.setup]} {sig.direction}",
-            risk_cap_pct=cap,
+            risk_cap_pct=cap_here,
             keep_sl=True, rr=RR,           # SL au niveau de structure, TP = 2R du prix réel
             max_per_symbol=max_pos,
         )

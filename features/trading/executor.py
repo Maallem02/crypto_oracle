@@ -1,3 +1,4 @@
+import math
 import time
 import MetaTrader5 as mt5
 from datetime import datetime, timezone
@@ -806,6 +807,41 @@ def split_half_volume(symbol: str, volume: float) -> float | None:
     if half < si.volume_min - 1e-9 or rest < si.volume_min - 1e-9:
         return None
     return half
+
+
+def size_by_risk(mt5_symbol: str, action: str, price: float, sl: float, risk_pct: float) -> tuple:
+    """Taille en % de risque — 2026-10-10, demande utilisateur (vidéo "4 concepts
+    mathématiques" : 0.25-2 % par trade, le dollar risqué reste fixe, le lot
+    s'adapte à la distance du stop).
+
+    Lot qui perd risk_pct % du solde si le stop est touché, arrondi VERS LE BAS au
+    pas du broker. -> (lot ou None, infos). None = même le lot minimum risquerait
+    plus : le trade ne doit pas être forcé au lot minimum.
+    Perte par lot calculée par MT5 (order_calc_profit) : juste aussi pour les
+    paires non cotées en USD (USDJPY)."""
+    si, acct = mt5.symbol_info(mt5_symbol), mt5.account_info()
+    if si is None or acct is None or acct.balance <= 0:
+        return None, {"reason": "no symbol / account info"}
+    buy = action == "buy"
+    loss = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL,
+                                 mt5_symbol, 1.0, price, sl)
+    risk_per_lot = -loss if loss is not None else 0.0
+    if risk_per_lot <= 0:
+        return None, {"reason": f"stop on the wrong side of the price (price {price}, stop {sl})"}
+    budget = acct.balance * risk_pct / 100.0
+    step = si.volume_step or 0.01
+    lot = min(math.floor(budget / risk_per_lot / step + 1e-9) * step, si.volume_max)
+    min_risk = risk_per_lot * si.volume_min
+    info = {"risk_per_lot": risk_per_lot, "budget": budget, "min_lot": si.volume_min,
+            "min_lot_risk": min_risk, "min_lot_risk_pct": 100 * min_risk / acct.balance,
+            "balance": acct.balance}
+    if lot < si.volume_min - 1e-9:
+        info["reason"] = (f"account too small: the minimum lot {si.volume_min} risks ${min_risk:.2f} = "
+                          f"{info['min_lot_risk_pct']:.1f}% of ${acct.balance:.2f} (limit {risk_pct:g}%)")
+        return None, info
+    lot = round(lot, 6)
+    info["risk"] = risk_per_lot * lot
+    return lot, info
 
 
 def close_partial(position, volume: float, comment: str) -> dict:

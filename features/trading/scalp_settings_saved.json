@@ -1,6 +1,6 @@
 {
   "risk_percent": 3.0,
-  "min_score": 60.0,
+  "min_score": 85.0,
   "max_trades": 11,
   "max_daily_trades": 0,
   "max_daily_loss_pct": 35.0,
@@ -32,6 +32,9 @@
   "pending_entry_enabled": true,
   "target_risk_pct": 7.0,
   "risk_cap_pct": null,
+  "sizing_mode": "risk",
+  "risk_per_trade_pct": 5.0,
+  "manual_lots": {},
   "pending_expire_minutes": 0,
   "trail_start_r": 1.0,
   "partial_close_r": 1.0,

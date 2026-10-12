@@ -66,3 +66,6 @@ data/vp_exness_m5_*
 data/vp_gold_3y_*
 data/trend_following_out.txt
 data/trend_robustness_out.txt
+data/markov_regime_out.txt
+data/multi_d1/
+data/multi_market_*

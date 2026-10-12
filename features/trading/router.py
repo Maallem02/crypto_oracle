@@ -390,6 +390,26 @@ class ScalpingSettings(BaseModel):
     # marché comme en limite, et une entrée limite ne vise jamais plus que ce
     # plafond (voir _smc_target_risk). Le bot Volume Profile a son propre réglage.
     risk_cap_pct:          Optional[float] = None
+    # ── Taille en % de risque — 2026-10-10 (vidéo "4 concepts mathématiques",
+    # demande utilisateur). "risk" : chaque trade risque risk_per_trade_pct % du
+    # solde (lot = budget / perte par lot au stop, arrondi vers le bas) ; si même
+    # le lot minimum risque plus, un ACHAT peut encore attendre une entrée limite
+    # assez proche du stop pour que le lot minimum tienne dans ce budget (même
+    # mécanisme que compute_risk_based_entry), sinon le trade est REFUSÉ.
+    # "fixed" : l'ancien comportement (lot_sizes de l'app, target_risk_pct,
+    # risk_cap_pct). Mesure réelle avant le changement : risque médian 5.1 % par
+    # trade (max 16.5 %) avec une espérance de -0.08R sur 317 trades.
+    sizing_mode:           str     = "risk"
+    risk_per_trade_pct:    float   = 1.0
+    # Lot choisi à la main, par symbole (2026-10-12, demande utilisateur : « le bot
+    # choisit le lot si je n'en choisis pas, mais respecte le lot que je donne »).
+    # Absent / 0 = automatique (risk_per_trade_pct). Un lot donné est utilisé TEL
+    # QUEL pour ce symbole, comme l'ancien mode lots fixes : entrée limite visant
+    # target_risk_pct, plafond de sécurité par symbole de l'executor (15 % crypto /
+    # métaux, 7 % forex) — au-delà le trade est refusé, jamais réduit.
+    # Clé distincte des anciens lot_sizes (gardés, inutilisés en mode risque) pour
+    # qu'aucun ancien lot ne se réactive sans que l'utilisateur l'ait retapé.
+    manual_lots:           dict    = {}
     pending_expire_minutes: int    = 0       # 0 = GTC, no expiration (per user 2026-07-30)
     # ── Filtres qualité d'entrée (mesurés sur 36 643 signaux, 2026-08-01) ──
     # Mesuré EN PLUS du filtre de tendance par timeframe déjà en place, et NET
@@ -525,6 +545,38 @@ class ScalpingSettings(BaseModel):
         if not 1 <= v <= 50:
             raise ValueError("risk_cap_pct must be between 1 and 50 (or empty for the per-symbol defaults)")
         return round(float(v), 1)
+
+    @field_validator('sizing_mode')
+    @classmethod
+    def check_sizing_mode(cls, v):
+        if v not in ("risk", "fixed"):
+            raise ValueError("sizing_mode must be 'risk' or 'fixed'")
+        return v
+
+    @field_validator('risk_per_trade_pct')
+    @classmethod
+    def check_risk_per_trade(cls, v):
+        if not 0.1 <= float(v) <= 5.0:
+            raise ValueError("risk_per_trade_pct must be between 0.1 and 5")
+        return round(float(v), 2)
+
+    @field_validator('manual_lots', mode='before')
+    @classmethod
+    def check_manual_lots(cls, v):
+        # symbole -> lot > 0 ; vide / 0 / null = automatique (la clé disparaît).
+        # Minimum et pas du broker : vérifiés au Start (voir _check_manual_lots).
+        if v is None:
+            return {}
+        if not isinstance(v, dict):
+            raise ValueError("manual_lots must be an object {symbol: lot}")
+        out = {}
+        for k, x in v.items():
+            if x is None or x == "" or x == 0:
+                continue
+            if isinstance(x, bool) or not isinstance(x, (int, float)) or x < 0:
+                raise ValueError(f"manual lot for {k} must be a positive number (or empty for auto)")
+            out[str(k).upper()] = round(float(x), 6)
+        return out
 
 import json as _json, os as _os
 
@@ -875,9 +927,19 @@ def _blocks_market_entry(symbol: str, action: str) -> bool:
     return True
 
 
+def _smc_risk_mode(settings: dict) -> bool:
+    """Taille en % de risque (défaut depuis le 2026-10-10). Des réglages sans la
+    clé (anciens fichiers, tests) gardent l'ancien comportement en lots fixes."""
+    return settings.get("sizing_mode", "fixed") == "risk"
+
+
 def _smc_risk_cap(settings: dict) -> Optional[float]:
     """Plafond de risque par trade réglé dans l'app (fraction, 0.15 = 15 %),
-    ou None pour garder les plafonds par symbole de l'executor."""
+    ou None pour garder les plafonds par symbole de l'executor.
+    En mode % de risque : le risque choisi + 10 % de marge (le prix bouge entre
+    le calcul du lot et l'envoi de l'ordre)."""
+    if _smc_risk_mode(settings):
+        return float(settings.get("risk_per_trade_pct", 1.0)) * 1.10 / 100.0
     try:
         v = settings.get("risk_cap_pct")
         v = float(v) if v is not None else 0.0
@@ -890,9 +952,67 @@ def _smc_target_risk(settings: dict) -> float:
     """% de risque visé par les entrées limites (compute_risk_based_entry) :
     target_risk_pct, mais jamais au-dessus du plafond réglé — sinon chaque
     limite visant 7 % sous un plafond de 5 % serait refusée par l'executor."""
+    if _smc_risk_mode(settings):
+        return float(settings.get("risk_per_trade_pct", 1.0))
     t = float(settings.get("target_risk_pct", 5.0))
     cap = _smc_risk_cap(settings)
     return min(t, cap * 100.0) if cap else t
+
+
+def _smc_risk_lot(settings: dict, symbol: str, action: str, entry: float, sl: float) -> tuple:
+    """Mode % de risque : -> (lot, lot_min_seulement, raison_du_refus).
+      * lot qui risque risk_per_trade_pct % du solde au prix du signal ;
+      * sinon, pour un ACHAT avec entrées limites actives : le lot minimum, à
+        placer UNIQUEMENT en limite assez près du stop (lot_min_seulement=True) ;
+      * sinon refus (raison renseignée) — jamais de lot minimum forcé au marché."""
+    from features.trading.executor import size_by_risk
+    mt5sym = SYMBOL_MAP.get(symbol.upper(), symbol)
+    pct = float(settings.get("risk_per_trade_pct", 1.0))
+    lot, info = size_by_risk(mt5sym, action, entry, sl, pct)
+    if lot is not None:
+        return lot, False, None
+    if action == "buy" and settings.get("pending_entry_enabled") and info.get("min_lot"):
+        return float(info["min_lot"]), True, None
+    return 0.0, False, info.get("reason", "position size unavailable")
+
+
+def _smc_manual_lot(settings: dict, symbol: str) -> float:
+    """Lot tapé dans l'app pour ce symbole, 0 = automatique (voir manual_lots)."""
+    try:
+        return float((settings.get("manual_lots") or {}).get((symbol or "").upper(), 0) or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _smc_sizing(settings: dict, symbol: str) -> dict:
+    """Réglages de taille pour UN signal. Lot manuel sur ce symbole -> ancien
+    mode lots fixes avec CE lot (respecté tel quel ; plafonds de sécurité par
+    symbole de l'executor ; entrée limite visant target_risk_pct). Sinon les
+    réglages tels quels (% de risque par défaut)."""
+    lot = _smc_manual_lot(settings, symbol)
+    if lot <= 0:
+        return settings
+    return {**settings, "sizing_mode": "fixed", "risk_cap_pct": None,
+            "lot_sizes": {**(settings.get("lot_sizes") or {}), symbol: lot}}
+
+
+def _check_manual_lots(lots: dict) -> list:
+    """Erreurs lisibles si un lot manuel ne respecte pas le minimum, le maximum
+    ou le pas du broker (vérifié au Start depuis l'app). Liste vide = OK."""
+    errors = []
+    for sym, lot in (lots or {}).items():
+        si = mt5.symbol_info(SYMBOL_MAP.get(sym, sym))
+        if si is None:
+            errors.append(f"{sym}: not offered by this broker")
+            continue
+        step = si.volume_step or 0.01
+        if lot < si.volume_min - 1e-9:
+            errors.append(f"{sym}: lot {lot:g} is below the broker minimum of {si.volume_min:g}")
+        elif lot > si.volume_max + 1e-9:
+            errors.append(f"{sym}: lot {lot:g} is above the broker maximum of {si.volume_max:g}")
+        elif abs(lot / step - round(lot / step)) > 1e-6:
+            errors.append(f"{sym}: lot {lot:g} is not a multiple of the broker step {step:g}")
+    return errors
 
 # ── Exemption filtre HTF sur les VENTES — 2026-08-26, TEST FORWARD ──────────
 # Pour les symboles listés ici, une VENTE n'est plus refusée parce que la
@@ -2463,8 +2583,8 @@ def _scalp_auto_scan_inner():
             # retiré ici : un symbole déjà en position est skippé
             # plus haut, donc ce cas ne peut plus se présenter)
 
-            lot_sizes  = settings.get("lot_sizes", {})
-            fixed_lot  = float(lot_sizes.get(symbol, 0))
+            _sz        = _smc_sizing(settings, symbol)      # lot manuel du symbole, sinon % de risque
+            fixed_lot  = float((_sz.get("lot_sizes") or {}).get(symbol, 0))
             confidence = min(0.5 + abs(sig.get("momentum", 0.5)) / 10
                               + sig.get("pd_bonus", 0.0)
                               + sig.get("m5_bonus", 0.0), 0.9)
@@ -2485,6 +2605,17 @@ def _scalp_auto_scan_inner():
             #   VENTE  -> pas de limite (les ventes en attente sont 0 gain
             #             sur 9 en live) ; si le risque dépasse le plafond,
             #             place_trade() refusera de lui-même
+            # Taille en % de risque (voir ScalpingSettings.sizing_mode)
+            _fb_min_only = False
+            if _smc_risk_mode(_sz):
+                fixed_lot, _fb_min_only, _fb_skip = _smc_risk_lot(
+                    _sz, symbol, fb_action, sig["entry"], sig["sl"])
+                if _fb_skip:
+                    print(f"[{tag}-RISK] {symbol}: skipped - {_fb_skip}")
+                    _log_rejection(symbol, f"{signal_type}_risk_size_skip: {_fb_skip}",
+                                   timeframe=tf, signal_type=signal_type)
+                    return False
+
             _fb_pending = False
             if fb_action == "buy" and fixed_lot > 0 and settings.get("pending_entry_enabled"):
                 try:
@@ -2495,7 +2626,7 @@ def _scalp_auto_scan_inner():
                         sl=              sig["sl"],
                         market_price=    sig["entry"],
                         fixed_lot=       fixed_lot,
-                        target_risk_pct= _smc_target_risk(settings),
+                        target_risk_pct= _smc_target_risk(_sz),
                         min_buffer_price=0.3 * _fb_atr,   # 1.0 -> 0.3 le 2026-08-26 :
                                                           # annulation, même raison qu'en
                                                           # LG-primary (les stops serrés
@@ -2516,7 +2647,7 @@ def _scalp_auto_scan_inner():
                             confidence=     confidence,
                             fixed_lot=      fixed_lot,
                             expire_minutes= settings.get("pending_expire_minutes", 0),
-                            risk_cap_pct=   _smc_risk_cap(settings),
+                            risk_cap_pct=   _smc_risk_cap(_sz),
                         )
                         _fb_pending = True
                 except Exception as _rbe_e:
@@ -2524,6 +2655,14 @@ def _scalp_auto_scan_inner():
 
             # Symbole en limite uniquement (voir PENDING_ONLY_SYMBOLS) : aucune
             # limite n'a été posée, donc on n'entre PAS au marché à la place.
+            if _fb_min_only and not _fb_pending:
+                _why = ("account too small for a market entry at this risk: the minimum "
+                        "lot only fits with a limit entry closer to the stop")
+                print(f"[{tag}-RISK] {symbol}: skipped - {_why}")
+                _log_rejection(symbol, f"{signal_type}_risk_size_skip: {_why}",
+                               timeframe=tf, signal_type=signal_type)
+                return False
+
             if not _fb_pending and _blocks_market_entry(symbol, fb_action):
                 print(f"[{tag}] {symbol} {fb_action}: limite uniquement pour ce "
                       f"symbole — entrée au marché refusée")
@@ -2542,7 +2681,7 @@ def _scalp_auto_scan_inner():
                     risk_percent= settings["risk_percent"],
                     max_trades=   settings["max_trades"],
                     fixed_lot=    fixed_lot,
-                    risk_cap_pct= _smc_risk_cap(settings),
+                    risk_cap_pct= _smc_risk_cap(_sz),
                 )
 
             if not fb_trade.get("success"):
@@ -3128,8 +3267,10 @@ def _scalp_auto_scan_inner():
                 # Full app control (user choice 2026-07-24: "respect every parameter
                 # from the app"). Lot per symbol comes from the app's lot_sizes;
                 # auto (risk-based) only if a symbol has no lot set.
-                lot_sizes  = settings.get("lot_sizes", {})
-                fixed_lot  = float(lot_sizes.get(symbol, 0))
+                # 2026-10-12 : lot manuel du symbole (manual_lots) respecté tel
+                # quel ; sans lot manuel, taille en % de risque (voir _smc_sizing).
+                _sz        = _smc_sizing(settings, symbol)
+                fixed_lot  = float((_sz.get("lot_sizes") or {}).get(symbol, 0))
 
                 # ML-driven position sizing: scale lot by AI confidence
                 ml_threshold = settings.get("ml_threshold", 0.0)
@@ -3207,6 +3348,21 @@ def _scalp_auto_scan_inner():
                 # marchés (XAG +9.6%, XAU +7.0%). Le backtest janvier-juillet
                 # confirme le sens, mais l'ampleur est flattée par le régime.
                 # À réexaminer sur une vraie phase baissière.
+                # ── Taille en % de risque (voir ScalpingSettings.sizing_mode) ──
+                # Calculée ICI, après le plancher de SL et l'objectif 2.5R : sur
+                # le stop qui sera réellement posé.
+                _min_lot_only = False
+                if _smc_risk_mode(_sz):
+                    fixed_lot, _min_lot_only, _size_skip = _smc_risk_lot(
+                        _sz, symbol, bias, entry_data["entry"], entry_data["sl"])
+                    if _size_skip:
+                        print(f"[RISK-SIZE] {symbol} {tf} {bias}: skipped - {_size_skip}")
+                        _log_rejection(symbol, f"risk_size_skip: {_size_skip}",
+                                       score=ta_score, bias=bias)
+                        continue
+                    print(f"[RISK-SIZE] {symbol} {tf} {bias}: lot {fixed_lot}"
+                          f"{' (minimum lot: limit entry only)' if _min_lot_only else ''}")
+
                 _use_pending = (settings.get("pending_entry_enabled")
                                 and fixed_lot > 0
                                 and bias == "buy")
@@ -3246,7 +3402,7 @@ def _scalp_auto_scan_inner():
                         sl=              entry_data["sl"],
                         market_price=    entry_data["entry"],
                         fixed_lot=       fixed_lot,
-                        target_risk_pct= _smc_target_risk(settings),
+                        target_risk_pct= _smc_target_risk(_sz),
                         min_buffer_price=_atr_buf,
                     )
                     print(f"[RISK-ENTRY] {symbol} {tf}: {_rbe['mode']} — {_rbe['reason']}")
@@ -3266,7 +3422,7 @@ def _scalp_auto_scan_inner():
                             confidence=     analysis["scalping_score"] / 100,
                             fixed_lot=      fixed_lot,
                             expire_minutes= settings.get("pending_expire_minutes", 0),
-                            risk_cap_pct=   _smc_risk_cap(settings),
+                            risk_cap_pct=   _smc_risk_cap(_sz),
                         )
                         if not trade.get("success"):
                             print(f"[LG-PRIMARY] {symbol}: "
@@ -3314,6 +3470,15 @@ def _scalp_auto_scan_inner():
                 # Symbole en limite uniquement (voir PENDING_ONLY_SYMBOLS) : si
                 # aucune limite n'a été posée — vente, ou achat dont le risque
                 # tient déjà au prix du marché — on n'entre pas au marché.
+                # Lot minimum trop gros au prix du marché : il n'est permis
+                # qu'en limite assez proche du stop. Pas de limite -> pas de trade.
+                if _min_lot_only and not _pending_already_placed:
+                    _why = ("account too small for a market entry at this risk: the minimum "
+                            "lot only fits with a limit entry closer to the stop")
+                    print(f"[RISK-SIZE] {symbol} {tf} {bias}: skipped - {_why}")
+                    _log_rejection(symbol, f"risk_size_skip: {_why}", score=ta_score, bias=bias)
+                    continue
+
                 if not _pending_already_placed and _blocks_market_entry(symbol, bias):
                     print(f"[LG-PRIMARY] {symbol} {tf} {bias}: limite uniquement "
                           f"pour ce symbole — entrée au marché refusée")
@@ -3332,7 +3497,7 @@ def _scalp_auto_scan_inner():
                         risk_percent= settings["risk_percent"],
                         max_trades=   settings["max_trades"],
                         fixed_lot=    fixed_lot,
-                        risk_cap_pct= _smc_risk_cap(settings),
+                        risk_cap_pct= _smc_risk_cap(_sz),
                     )
 
                 if trade.get("success"):
@@ -3453,6 +3618,15 @@ def start_scalping(settings: ScalpingSettings, source: str = "app"):
     # comme un démarrage volontaire depuis l'app (voir risk_state plus haut).
     d = settings.dict()
 
+    # Lots manuels : minimum / maximum / pas du broker vérifiés AVANT tout
+    # changement d'état (refus lisible dans l'app). Pas à la reprise watchdog :
+    # les réglages sauvegardés ont déjà passé ce contrôle.
+    if source != "watchdog" and d.get("manual_lots"):
+        _mt5_init()
+        _lot_errors = _check_manual_lots(d["manual_lots"])
+        if _lot_errors:
+            raise HTTPException(status_code=400, detail="; ".join(_lot_errors))
+
     if source != "watchdog":
         risk_state["day_anchor"] = datetime.now().isoformat()
         try:
@@ -3503,12 +3677,27 @@ def stop_scalping():
     scalp_state["stopped_reason"] = "Manual stop"
     return {"success": True, "message": "Scalping bot stopped"}
 
+def _lot_rules() -> dict:
+    """Minimum / pas / maximum de lot du broker par symbole (pour que l'app
+    vérifie un lot manuel avant d'arrêter / relancer le bot)."""
+    out = {}
+    try:
+        for sym, mt5sym in SYMBOL_MAP.items():
+            si = mt5.symbol_info(mt5sym)
+            if si is not None:
+                out[sym] = {"min_lot": si.volume_min, "lot_step": si.volume_step, "max_lot": si.volume_max}
+    except Exception:
+        pass
+    return out
+
+
 @router.get("/scalping/status")
 def scalping_status():
     return {
         **scalp_state,
         "open_trades": len(get_open_trades()),
         "history_count": len(scalp_history),
+        "lot_rules": _lot_rules(),
     }
 
 @router.get("/scalping/positions")
@@ -3700,10 +3889,26 @@ def get_dt_history(limit: int = 30):
     return dt_history(limit)
 
 
+@router.get("/dt/audit")
+def get_dt_audit(since: str | None = None):
+    """Contrôle d'exécution : chaque clôture journalière et chaque trade réel du
+    bot comparés aux règles testées, et résultat réel dans la fourchette du test
+    (features/daily_trend/audit.py). Lecture seule, 10 min de cache.
+    since = AAAA-MM-JJ (défaut : premier scan du bot)."""
+    from features.daily_trend.audit import dt_audit
+    if since is not None:
+        try:
+            datetime.fromisoformat(since)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="since must be a date like 2026-10-09")
+    return dt_audit(since)
+
+
 @router.post("/dt/settings")
 def post_dt_settings(patch: dict):
-    """symbols (BTC/ETH) et risk_pct (0.1-5 %), validés, tout ou rien,
-    appliqués au prochain signal sans redémarrage."""
+    """symbols (BTC/ETH), risk_pct (0.1-5 %) et max_crypto_risk_pct (plafond
+    commun BTC + ETH, 0.1-10 %), validés, tout ou rien, appliqués au prochain
+    signal sans redémarrage."""
     from features.daily_trend.runner import SettingsError, update_settings
     try:
         return update_settings(patch)

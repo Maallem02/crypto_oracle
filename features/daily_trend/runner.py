@@ -21,6 +21,15 @@ RÈGLES — exactement celles testées, rien d'optimisé après coup :
   * taille : risk_pct % du solde perdu si le stop est touché. Si même le lot
     minimum du broker risque plus que risk_pct, le trade est REFUSÉ (journalisé) :
     jamais de lot forcé au-delà du risque choisi.
+  * PLAFOND CRYPTO COMMUN (2026-10-10, demande utilisateur) : BTC et ETH bougent
+    ensemble (corrélation 0.83 ; 84 % des trades BTC chevauchent un trade ETH),
+    donc deux positions ouvertes = un seul pari de taille double. Le risque total
+    des positions DT ouvertes (perte si tous les stops sont touchés, depuis le
+    prix d'entrée) ne dépasse pas max_crypto_risk_pct (défaut 3 %) : la 1re
+    entrée prend risk_pct, la 2e seulement ce qui reste du plafond (refusée s'il
+    ne reste rien). Les sorties d'un scan sont traitées AVANT ses entrées.
+    Simulé 2018-2026 (2 % / plafond 3 %) : +21.4 %/an, pire baisse -18.4 %
+    contre +26.2 % et -21.6 % sans plafond.
 
 INDÉPENDANCE (comme le bot Volume Profile) :
   * son propre minuteur ('dt_scan', toutes les 5 min, main.py), son propre
@@ -51,8 +60,10 @@ N_ENTRY = 20          # jours du canal d'entrée
 N_EXIT = 10           # jours du canal de sortie
 STOP_ATR = 2.0        # stop de protection, en ATR journalier
 ALLOWED = ("BTC", "ETH")
-DEFAULT_SETTINGS = {"symbols": ["BTC", "ETH"], "risk_pct": 2.0}
+DEFAULT_SETTINGS = {"symbols": ["BTC", "ETH"], "risk_pct": 2.0, "max_crypto_risk_pct": 3.0}
 RISK_RANGE = (0.1, 5.0)
+CAP_RANGE = (0.1, 10.0)  # plafond du risque ouvert BTC + ETH ensemble
+MIN_LEFT_PCT = 0.01      # en dessous, le plafond est considéré plein
 HISTORY_BARS = 400    # assez pour un ATR de Wilder stabilisé
 COMMENT = "DT long"
 
@@ -125,11 +136,21 @@ def update_settings(patch: dict) -> dict:
             errors.append(f"risk_pct must be between {lo:g} and {hi:g} %")
         else:
             new["risk_pct"] = round(float(v), 2)
+    if "max_crypto_risk_pct" in patch:
+        v = patch["max_crypto_risk_pct"]
+        lo, hi = CAP_RANGE
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            errors.append("max_crypto_risk_pct must be a number")
+        elif not lo <= float(v) <= hi:
+            errors.append(f"max_crypto_risk_pct must be between {lo:g} and {hi:g} %")
+        else:
+            new["max_crypto_risk_pct"] = round(float(v), 2)
     if errors:
         raise SettingsError("; ".join(errors))
     dt_state["settings"] = new
     _persist()
-    print(f"[DT] settings saved: symbols={new['symbols']} risk={new['risk_pct']}%")
+    print(f"[DT] settings saved: symbols={new['symbols']} risk={new['risk_pct']}% "
+          f"crypto cap={new['max_crypto_risk_pct']}%")
     return dt_status()
 
 
@@ -231,6 +252,38 @@ def size_trade(balance: float, risk_pct: float, risk_per_lot: float, vmin: float
     return lot if lot >= vmin - 1e-9 else None
 
 
+def risk_left(risk_pct: float, cap_pct: float, open_pct: float) -> float:
+    """Risque permis pour une nouvelle entrée : risk_pct, sans dépasser ce qui
+    reste du plafond crypto commun une fois compté le risque déjà ouvert."""
+    return max(0.0, min(risk_pct, cap_pct - open_pct))
+
+
+def open_crypto_risk(balance: float, cap_pct: float):
+    """Risque des positions DT ouvertes, en % du solde : perte si leur stop est
+    touché, mesurée depuis le prix d'entrée (le bot ne déplace jamais ses stops).
+    Une position SANS stop compte pour tout le plafond (perte non bornée).
+    Retourne (total %, [(symbole, % ou None si pas de stop)])."""
+    total, parts = 0.0, []
+    for p in mt5.positions_get() or []:
+        if p.magic != DT_MAGIC:
+            continue
+        sym = p.symbol[:3]
+        sl = float(getattr(p, "sl", 0.0) or 0.0)
+        if sl <= 0 or balance <= 0:
+            parts.append((sym, None))
+            total += cap_pct
+            continue
+        loss = mt5.order_calc_profit(mt5.ORDER_TYPE_BUY, p.symbol, p.volume, p.price_open, sl)
+        pct = max(0.0, -loss) / balance * 100 if loss is not None else cap_pct
+        parts.append((sym, pct))
+        total += pct
+    return total, parts
+
+
+def _parts_text(parts) -> str:
+    return ", ".join(f"{sym} open {'with NO stop' if pct is None else f'uses {pct:.2f}%'}" for sym, pct in parts)
+
+
 # ── exécution ────────────────────────────────────────────────────────────────
 def _completed_bars(mt5sym, now_utc):
     bars = mt5.copy_rates_from_pos(mt5sym, mt5.TIMEFRAME_D1, 0, HISTORY_BARS)
@@ -250,10 +303,23 @@ def _closed_during(mt5sym, bar_t, now_utc) -> bool:
                and not (d.comment or "").startswith("DT exit") for d in deals)
 
 
-def _open_long(symbol, mt5sym, stop_dist, risk_pct, d, bar_t):
+def _open_long(symbol, mt5sym, stop_dist, settings, d, bar_t):
     si, tick, acct = mt5.symbol_info(mt5sym), mt5.symbol_info_tick(mt5sym), mt5.account_info()
     if si is None or tick is None or acct is None:
         _log(symbol, "error", bar_time=bar_t, reason="no symbol info / tick / account")
+        return
+    risk_set = float(settings["risk_pct"])
+    cap = float(settings.get("max_crypto_risk_pct", DEFAULT_SETTINGS["max_crypto_risk_pct"]))
+    open_pct, parts = open_crypto_risk(acct.balance, cap)
+    risk_pct = risk_left(risk_set, cap, open_pct)
+    cap_note = ""
+    if risk_pct < risk_set - 1e-9:
+        cap_note = (f"{risk_pct:.2f}% = what is left of the {cap:g}% crypto cap"
+                    + (f" ({_parts_text(parts)})" if parts else ""))
+    if risk_pct < MIN_LEFT_PCT:
+        why = f"crypto risk cap full: {_parts_text(parts) or 'no room'}, cap {cap:g}% - nothing left for {symbol}"
+        print(f"[DT] {symbol}: entry signal skipped - {why}")
+        _log(symbol, "skip", bar_time=bar_t, close=d["close"], level=d["level"], atr=d["atr"], reason=why)
         return
     price = tick.ask
     sl = round(price - stop_dist, si.digits)
@@ -263,7 +329,8 @@ def _open_long(symbol, mt5sym, stop_dist, risk_pct, d, bar_t):
     if lot is None:
         min_risk = risk_per_lot * si.volume_min
         why = (f"account too small: the minimum lot {si.volume_min} risks ${min_risk:.2f} = "
-               f"{100 * min_risk / acct.balance:.1f}% of ${acct.balance:.2f} (limit {risk_pct:g}%)")
+               f"{100 * min_risk / acct.balance:.1f}% of ${acct.balance:.2f} "
+               f"(limit {cap_note or f'{risk_pct:g}%'})")
         print(f"[DT] {symbol}: entry signal skipped - {why}")
         _log(symbol, "skip", bar_time=bar_t, close=d["close"], level=d["level"], atr=d["atr"],
              price=price, sl=sl, reason=why)
@@ -283,10 +350,11 @@ def _open_long(symbol, mt5sym, stop_dist, risk_pct, d, bar_t):
              price=price, sl=sl, volume=lot, reason=why)
         return
     risk_usd = risk_per_lot * lot
-    print(f"[DT] {symbol}: BOUGHT {lot} @ {res.price or price} SL {sl} - risk ${risk_usd:.2f} - {d['why']}")
+    why = d["why"] + (f"; risk limited to {cap_note}" if cap_note else "")
+    print(f"[DT] {symbol}: BOUGHT {lot} @ {res.price or price} SL {sl} - risk ${risk_usd:.2f} - {why}")
     _log(symbol, "entry", bar_time=bar_t, close=d["close"], level=d["level"], atr=d["atr"],
          price=res.price or price, sl=sl, volume=lot, risk_usd=round(risk_usd, 2),
-         risk_pct=round(100 * risk_usd / acct.balance, 2), ticket=res.order, reason=d["why"])
+         risk_pct=round(100 * risk_usd / acct.balance, 2), ticket=res.order, reason=why)
 
 
 def dt_scan(now_utc: datetime | None = None) -> None:
@@ -295,7 +363,8 @@ def dt_scan(now_utc: datetime | None = None) -> None:
     update_outcomes()
     now_utc = now_utc or datetime.now(UTC)
     s = dt_state["settings"]
-    for symbol in ALLOWED:
+    entries = []                                        # jouées après les sorties : le plafond crypto
+    for symbol in ALLOWED:                              # libéré par une sortie sert le jour même (comme simulé)
         mt5sym = SYMBOL_MAP.get(symbol)
         mine = [p for p in (mt5.positions_get(symbol=mt5sym) or []) if p.magic == DT_MAGIC]
         if symbol not in s["symbols"] and not mine:
@@ -323,9 +392,14 @@ def dt_scan(now_utc: datetime | None = None) -> None:
                 _log(symbol, "check", bar_time=bar_t, close=d["close"], level=d["level"], atr=d["atr"],
                      reason=f"entry signal, but the bot is stopped or {symbol} is off - not taken")
             else:
-                _open_long(symbol, mt5sym, d["stop_dist"], float(s["risk_pct"]), d, bar_t)
+                entries.append((symbol, mt5sym, d, bar_t))
+                continue
         else:
             _log(symbol, "check", bar_time=bar_t, close=d["close"], level=d["level"], atr=d["atr"], reason=d["why"])
+        dt_state["last_bar"][symbol] = bar_t
+        _persist()
+    for symbol, mt5sym, d, bar_t in entries:            # ordre BTC puis ETH, comme la simulation
+        _open_long(symbol, mt5sym, d["stop_dist"], s, d, bar_t)
         dt_state["last_bar"][symbol] = bar_t
         _persist()
 
@@ -364,10 +438,13 @@ def dt_status() -> dict:
                         exit_level=float(bars["low"][i - N_EXIT + 1:i + 1].min()), atr=round(atr, 2),
                         min_lot=si.volume_min, min_lot_risk_usd=round(min_risk, 2) if min_risk else None,
                         min_lot_risk_pct=round(100 * min_risk / bal, 1) if (min_risk and bal > 0) else None,
-                        tradable=bool(min_risk and bal > 0 and 100 * min_risk / bal <= s["risk_pct"]))
+                        tradable=bool(min_risk and bal > 0 and 100 * min_risk / bal
+                                      <= min(s["risk_pct"], s.get("max_crypto_risk_pct", s["risk_pct"]))))
         symbols[symbol] = info
     ls = dt_state.get("last_scan")
     pos = [p for p in (mt5.positions_get() or []) if p.magic == DT_MAGIC]
+    cap = float(s.get("max_crypto_risk_pct", DEFAULT_SETTINGS["max_crypto_risk_pct"]))
+    open_pct, parts = open_crypto_risk(bal, cap)
     return {"bot": "daily_trend", "magic": DT_MAGIC, "enabled": dt_state["enabled"], "settings": s,
             "rules": {"entry_days": N_ENTRY, "exit_days": N_EXIT, "stop_atr": STOP_ATR, "atr_days": 14,
                       "side": "long only", "timeframe": "daily (UTC)"},
@@ -375,6 +452,11 @@ def dt_status() -> dict:
             "last_scan_age_min": round((now - datetime.fromisoformat(ls)).total_seconds() / 60, 1) if ls else None,
             "last_error": dt_state.get("last_error"),
             "account": {"balance": round(bal, 2), "demo": bool(acct and acct.trade_mode == 0)},
+            "crypto_risk": {"cap_pct": cap, "open_pct": round(open_pct, 2),
+                            "left_pct": round(max(0.0, cap - open_pct), 2),
+                            "next_trade_pct": round(risk_left(float(s["risk_pct"]), cap, open_pct), 2),
+                            "open": [{"symbol": sym, "pct": None if pct is None else round(pct, 2)}
+                                     for sym, pct in parts]},
             "symbols": symbols,
             "open_positions": [{"symbol": p.symbol, "volume": p.volume, "price_open": p.price_open, "sl": p.sl,
                                 "profit": round(p.profit + p.swap, 2),
