@@ -5,6 +5,7 @@ import '../providers/bot_provider.dart';
 import 'scalp_screen.dart';
 import 'vp_screen.dart';
 import 'dt_screen.dart';
+import 'dts_screen.dart';
 
 class BotScreen extends ConsumerStatefulWidget {
   const BotScreen({super.key});
@@ -20,7 +21,8 @@ class _BotScreenState extends ConsumerState<BotScreen>
   void initState() {
     super.initState();
     // 3e onglet : bot Volume Profile ; 4e : bot Daily Trend — indépendants du bot Scalping
-    _tabs = TabController(length: 4, vsync: this);
+    // 5e : Daily Trend SPOT sur le testnet Binance (petit capital)
+    _tabs = TabController(length: 5, vsync: this);
   }
 
   @override
@@ -48,6 +50,7 @@ class _BotScreenState extends ConsumerState<BotScreen>
             Tab(text: '⚡ Scalping'),
             Tab(text: '📊 Vol. Profile'),
             Tab(text: '📈 Daily Trend'),
+            Tab(text: '🧪 DT Spot'),
           ],
         ),
       ),
@@ -58,6 +61,7 @@ class _BotScreenState extends ConsumerState<BotScreen>
           const ScalpScreen(),
           const VpScreen(),
           const DtScreen(),
+          const DtsScreen(),
         ],
       ),
     );
