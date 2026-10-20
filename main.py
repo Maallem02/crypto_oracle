@@ -131,6 +131,11 @@ def startup():
     from features.daily_trend.runner import dt_job
     scheduler.add_job(dt_job,                'interval', minutes=5,  id='dt_scan',
                       coalesce=True, misfire_grace_time=120)
+    # Daily Trend SPOT : mêmes règles sur Binance spot TESTNET (petit capital,
+    # fractions, pas de lot minimum) — features/daily_trend/spot_runner.py
+    from features.daily_trend.spot_runner import spot_job
+    scheduler.add_job(spot_job,              'interval', minutes=5,  id='dts_scan',
+                      coalesce=True, misfire_grace_time=120)
     scheduler.add_job(_zone_weekly_retrain,  'cron',     day_of_week='sun', hour=2, minute=0,
                       id='zone_retrain',     coalesce=True, misfire_grace_time=3600)
     scheduler.start()

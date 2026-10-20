@@ -69,3 +69,5 @@ data/trend_robustness_out.txt
 data/markov_regime_out.txt
 data/multi_d1/
 data/multi_market_*
+data/binance_d1_*.npy
+data/dt_improvement_out.txt

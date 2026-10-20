@@ -175,6 +175,7 @@ def fake_close(p, v, c):
 
 
 R.close_partial = fake_close
+R.opposite_bot_exposure = lambda *a: None     # cross-bot rule: tested in test_opposite_block.py
 
 
 def scan():

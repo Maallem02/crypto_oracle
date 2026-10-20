@@ -9,26 +9,26 @@
     "max_crypto_risk_pct": 10.0
   },
   "last_bar": {
-    "BTC": 1791676800,
-    "ETH": 1791676800
+    "BTC": 1792368000,
+    "ETH": 1792368000
   },
   "last_check": {
     "BTC": {
       "action": "none",
-      "why": "close 83680.27 below the 20-day high 87398.19",
-      "close": 83680.27,
-      "level": 87398.19,
-      "atr": 2091.85032073268,
-      "bar_time": 1791676800
+      "why": "close 81841.59 below the 20-day high 87261.35",
+      "close": 81841.59,
+      "level": 87261.35,
+      "atr": 2093.0325000493103,
+      "bar_time": 1792368000
     },
     "ETH": {
       "action": "none",
-      "why": "close 2533.91 below the 20-day high 2806.72",
-      "close": 2533.91,
-      "level": 2806.72,
-      "atr": 84.25937492684511,
-      "bar_time": 1791676800
+      "why": "close 2404.63 below the 20-day high 2777.70",
+      "close": 2404.63,
+      "level": 2777.7,
+      "atr": 94.88364894288421,
+      "bar_time": 1792368000
     }
   },
-  "changed_at": "2026-10-12T00:00:34.816821+00:00"
+  "changed_at": "2026-10-20T00:01:20.098345+00:00"
 }

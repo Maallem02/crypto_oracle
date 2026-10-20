@@ -1,15 +1,15 @@
 {
   "scoring_weights": {
-    "rsi": 10.0,
-    "stoch": 12.0,
-    "adx": 10.2,
-    "lg_strength": 1.4,
-    "rr_ratio": 0.7,
-    "atr_ratio": 4.2,
-    "pd_pct": 6.0,
-    "htf": 15.1,
-    "structure": 12.0,
-    "pd_zone": 0.4
+    "rsi": 9.4,
+    "stoch": 13.9,
+    "adx": 11.1,
+    "lg_strength": 2.0,
+    "rr_ratio": 1.0,
+    "atr_ratio": 4.0,
+    "pd_pct": 6.2,
+    "htf": 9.8,
+    "structure": 13.1,
+    "pd_zone": 1.4
   },
   "thresholds": {
     "rsi_max_buy": 70,
@@ -20,9 +20,9 @@
   },
   "symbol_performance": {
     "BTC_15m": {
-      "win_rate": 0.387,
-      "trades": 191,
-      "priority": 0.77
+      "win_rate": 0.391,
+      "trades": 197,
+      "priority": 0.78
     },
     "BTC_30m": {
       "win_rate": 0.353,
@@ -31,23 +31,23 @@
     },
     "BTC_5m": {
       "win_rate": 0.421,
-      "trades": 233,
+      "trades": 235,
       "priority": 0.84
     },
     "ETH_15m": {
-      "win_rate": 0.416,
-      "trades": 190,
-      "priority": 0.83
+      "win_rate": 0.412,
+      "trades": 194,
+      "priority": 0.82
     },
     "ETH_30m": {
-      "win_rate": 0.429,
-      "trades": 21,
-      "priority": 0.86
+      "win_rate": 0.455,
+      "trades": 22,
+      "priority": 0.91
     },
     "ETH_5m": {
-      "win_rate": 0.346,
-      "trades": 260,
-      "priority": 0.69
+      "win_rate": 0.349,
+      "trades": 261,
+      "priority": 0.7
     },
     "EURUSD_15m": {
       "win_rate": 0.39,
@@ -74,10 +74,15 @@
       "trades": 10,
       "priority": 0.5
     },
+    "XAGUSD_15m": {
+      "win_rate": 0.2,
+      "trades": 10,
+      "priority": 0.5
+    },
     "XAGUSD_5m": {
-      "win_rate": 0.367,
-      "trades": 30,
-      "priority": 0.73
+      "win_rate": 0.353,
+      "trades": 34,
+      "priority": 0.71
     },
     "XAUUSD_15m": {
       "win_rate": 0.4,
@@ -91,6 +96,6 @@
     }
   },
   "blend_factor": 20,
-  "updated_at": "2026-10-05T17:19:27.970927",
+  "updated_at": "2026-10-19T08:55:26.353455",
   "source": "ml_retrain"
 }

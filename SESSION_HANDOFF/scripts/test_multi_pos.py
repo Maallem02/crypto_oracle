@@ -118,6 +118,7 @@ class FakeMT5:
     ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN = 0, 1, 2
     TRADE_RETCODE_DONE = 10009
     positions_get = staticmethod(lambda symbol=None, ticket=None: list(ex_positions))
+    orders_get = staticmethod(lambda symbol=None: [])
     symbol_select = staticmethod(lambda s, f: True)
     symbol_info = staticmethod(lambda s: NS(point=0.01, trade_contract_size=1.0, trade_tick_size=0.01,
                                             trade_tick_value=0.01, volume_min=0.01, volume_max=100.0,
@@ -137,8 +138,8 @@ ex._mt5_init = lambda: None
 ex.can_trade = lambda n: True
 
 
-def try_ex(magic, open_magics, mp):
-    ex_positions[:] = [NS(magic=m, type=1, symbol="BTCUSDm") for m in open_magics]
+def try_ex(magic, open_magics, mp, open_type=1):
+    ex_positions[:] = [NS(magic=m, type=open_type, symbol="BTCUSDm", ticket=50 + k) for k, m in enumerate(open_magics)]
     sent.clear()
     r = ex.place_trade(symbol="BTC", action="buy", entry=100.0, sl=99.0, tp1=102.0,
                        confidence=0.5, fixed_lot=0.01, magic=magic, keep_sl=(magic == 234100),
@@ -152,12 +153,20 @@ ok, why = try_ex(234100, [234100], 2)
 check("VP, max 2, 1 VP open -> sent", ok, why)
 ok, why = try_ex(234100, [234100, 234100], 2)
 check("VP, max 2, 2 VP open -> refused", not ok, why)
-ok, why = try_ex(234100, [234000, 0], 1)
-check("VP ignores SMC + manual positions", ok, why)
+ok, why = try_ex(234100, [234000, 0], 1, open_type=0)
+check("VP ignores SMC + manual positions in its count (same direction)", ok, why)
 ok, why = try_ex(234000, [234000], 5)
 check("SMC stays at 1 per symbol even if max_per_symbol is passed", not ok, why)
-ok, why = try_ex(234000, [234100, 234100], 1)
-check("SMC still ignores VP positions", ok, why)
+ok, why = try_ex(234000, [234100, 234100], 1, open_type=0)
+check("SMC still ignores VP positions in its count (same direction)", ok, why)
+# 2026-10-13 : jamais de sens opposé ENTRE bots (test_opposite_block.py)
+ok, why = try_ex(234100, [234000], 1, open_type=1)
+check("VP BUY while Scalping is SHORT BTC -> refused (no opposite positions across bots)",
+      not ok and "opposite position open" in why, why)
+ok, why = try_ex(234000, [234100], 1, open_type=1)
+check("Scalping BUY while VP is SHORT BTC -> refused", not ok and "opposite position open" in why, why)
+ok, why = try_ex(234100, [0], 1, open_type=1)
+check("a manual SHORT does not block VP", ok, why)
 
 print(f"\n{'ALL PASS' if not fails else str(fails) + ' FAILURES'}")
 sys.exit(1 if fails else 0)

@@ -3889,6 +3889,55 @@ def get_dt_history(limit: int = 30):
     return dt_history(limit)
 
 
+# ── Daily Trend SPOT — Binance TESTNET (2026-10-13) ─────────────────────────
+# Mêmes règles que le Daily Trend, en spot (fractions, pas de lot minimum) pour
+# un petit capital. Ordres vers le TESTNET uniquement ; ARRÊTÉ au 1er démarrage.
+@router.get("/dts/status")
+def get_dts_status():
+    from features.daily_trend.spot_runner import spot_status
+    return spot_status()
+
+
+@router.post("/dts/start")
+def start_dts():
+    from features.daily_trend.spot_runner import set_enabled
+    return set_enabled(True)
+
+
+@router.post("/dts/stop")
+def stop_dts():
+    from features.daily_trend.spot_runner import set_enabled
+    return set_enabled(False)
+
+
+@router.post("/dts/settings")
+def post_dts_settings(patch: dict):
+    """symbols (BTC/ETH), risk_pct (0.1-5), max_crypto_risk_pct (0.1-10),
+    capital_usd (20-100000) : l'argent confié au bot."""
+    from features.daily_trend.spot_runner import SettingsError, update_settings
+    try:
+        return update_settings(patch)
+    except SettingsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/dts/test-order")
+def post_dts_test_order(symbol: str = "BTC"):
+    """Bouton « Test order » : ~6$ achetés puis revendus sur le TESTNET, stop posé,
+    relu et annulé entre les deux. Ne touche pas les comptes du bot."""
+    from features.daily_trend.spot_runner import SettingsError, test_order
+    try:
+        return test_order(symbol)
+    except SettingsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/dts/history")
+def get_dts_history(limit: int = 30):
+    from features.daily_trend.spot_runner import spot_history
+    return spot_history(limit)
+
+
 @router.get("/dt/audit")
 def get_dt_audit(since: str | None = None):
     """Contrôle d'exécution : chaque clôture journalière et chaque trade réel du

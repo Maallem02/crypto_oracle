@@ -4,7 +4,7 @@ import MetaTrader5 as mt5
 from datetime import datetime, timezone
 from features.trading.risk_manager import (
     calculate_lot_size, can_trade, get_daily_pnl_pct, compute_risk_based_entry, BOT_MAGIC,
-    VP_MAGIC, OTHER_BOT_MAGICS,
+    VP_MAGIC, DT_MAGIC, OTHER_BOT_MAGICS,
 )
 
 # Symboles 24/7 — non concernés par les fenêtres rollover/ouverture forex
@@ -80,6 +80,36 @@ def _risk_cap_for(symbol: str) -> float:
             return pct
     return MAX_RISK_PCT
 
+# ── Pas de positions opposées entre bots — 2026-10-13 (demande utilisateur) ─
+# Le 12/10, le Scalping VENDAIT ETH à 19:21 et le VP ACHETAIT ETH à 19:30 : les
+# deux stoppés (-19.39$), deux spreads payés pour un pari nul. Aucun bot
+# (Scalping, VP, Daily Trend) n'ouvre un sens sur un symbole où un AUTRE bot a
+# déjà le sens CONTRAIRE, en position ou en ordre en attente (un ordre limite
+# peut se remplir plus tard). Premier arrivé, premier servi ; le même sens reste
+# permis (plafond global : à construire plus tard). Les positions d'un bot
+# restent régies par ses propres règles (VP : max_per_symbol / same_direction).
+# Les positions manuelles ne comptent pas.
+BOT_NAMES = {BOT_MAGIC: "Scalping", VP_MAGIC: "Volume Profile", DT_MAGIC: "Daily Trend"}
+_BUY_ORDER_TYPES = (0, 2, 4, 6)     # BUY, BUY_LIMIT, BUY_STOP, BUY_STOP_LIMIT
+_SELL_ORDER_TYPES = (1, 3, 5, 7)    # SELL, SELL_LIMIT, SELL_STOP, SELL_STOP_LIMIT
+
+
+def opposite_bot_exposure(mt5_symbol: str, action: str, own_magic: int | None = None) -> str | None:
+    """Raison du refus si un AUTRE bot que own_magic a le sens opposé sur ce
+    symbole (position ou ordre en attente), sinon None."""
+    want_buy = (action or "").lower() == "buy"
+    others = {m: n for m, n in BOT_NAMES.items() if m != own_magic}
+    for p in mt5.positions_get(symbol=mt5_symbol) or []:
+        if p.magic in others and (p.type == 0) != want_buy:
+            return (f"opposite position open: {BOT_NAMES[p.magic]} is "
+                    f"{'long' if p.type == 0 else 'short'} {mt5_symbol} (ticket {p.ticket})")
+    for o in mt5.orders_get(symbol=mt5_symbol) or []:
+        if o.magic in others and o.type in (_SELL_ORDER_TYPES if want_buy else _BUY_ORDER_TYPES):
+            return (f"opposite order pending: {BOT_NAMES[o.magic]} has a "
+                    f"{'sell' if want_buy else 'buy'} order on {mt5_symbol} (ticket {o.ticket})")
+    return None
+
+
 def _mt5_init():
     """
     Attache le terminal (idempotent) — délègue à mt5_client.ensure_mt5().
@@ -149,6 +179,10 @@ def place_trade(
     mt5_symbol = SYMBOL_MAP.get(symbol.upper())
     if not mt5_symbol:
         return {"success": False, "reason": f"Symbol {symbol} not supported"}
+
+    _opp = opposite_bot_exposure(mt5_symbol, action, magic)     # aucun bot à contre-sens (2026-10-13)
+    if _opp:
+        return {"success": False, "reason": _opp}
 
     # ── 1 position max par symbole (par stratégie) ───────────────────────────
     # L'empilement même-sens ("averaging") a produit 4 paires perdantes
@@ -499,8 +533,13 @@ def place_pending_trade(
     if not mt5_symbol:
         return {"success": False, "reason": f"Symbol {symbol} not supported"}
 
+    _opp = opposite_bot_exposure(mt5_symbol, action, BOT_MAGIC)     # aucun bot à contre-sens (2026-10-13)
+    if _opp:
+        return {"success": False, "reason": _opp}
+
     # Ordres limite = stratégie SMC uniquement. Les positions des autres bots
-    # (Volume Profile, Daily Trend) sont ignorées : les bots sont indépendants.
+    # (Volume Profile, Daily Trend) sont ignorées : les bots sont indépendants
+    # (sauf la règle ci-dessus : jamais de sens opposé entre bots).
     _existing = [p for p in (mt5.positions_get(symbol=mt5_symbol) or [])
                  if p.magic not in OTHER_BOT_MAGICS]
     if _existing:

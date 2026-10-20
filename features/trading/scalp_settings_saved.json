@@ -33,7 +33,7 @@
   "target_risk_pct": 7.0,
   "risk_cap_pct": null,
   "sizing_mode": "risk",
-  "risk_per_trade_pct": 5.0,
+  "risk_per_trade_pct": 2.0,
   "manual_lots": {},
   "pending_expire_minutes": 0,
   "trail_start_r": 1.0,

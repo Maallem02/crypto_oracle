@@ -1,0 +1,42 @@
+{
+  "enabled": true,
+  "settings": {
+    "symbols": [
+      "BTC",
+      "ETH"
+    ],
+    "risk_pct": 2.0,
+    "max_crypto_risk_pct": 3.0,
+    "capital_usd": 200.0
+  },
+  "positions": {},
+  "pending": {},
+  "realized_usd": 0.0,
+  "dust": {
+    "BTC": 0.0
+  },
+  "last_bar": {
+    "BTC": 1792368000,
+    "ETH": 1792368000
+  },
+  "last_exit": {},
+  "last_check": {
+    "BTC": {
+      "action": "none",
+      "why": "close 81938.40 below the 20-day high 87220.00",
+      "close": 81938.4,
+      "level": 87220.0,
+      "atr": 2067.1657611345736,
+      "bar_time": 1792368000
+    },
+    "ETH": {
+      "action": "none",
+      "why": "close 2408.01 below the 20-day high 2777.33",
+      "close": 2408.01,
+      "level": 2777.33,
+      "atr": 94.45944124962575,
+      "bar_time": 1792368000
+    }
+  },
+  "changed_at": "2026-10-20T00:01:21.015177+00:00"
+}

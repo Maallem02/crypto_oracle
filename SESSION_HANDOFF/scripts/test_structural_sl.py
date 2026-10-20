@@ -18,6 +18,7 @@ class FakeMT5:
     ORDER_FILLING_FOK, ORDER_FILLING_IOC, ORDER_FILLING_RETURN = 0, 1, 2
     TRADE_RETCODE_DONE = 10009
     positions_get = staticmethod(lambda symbol=None, ticket=None: [])
+    orders_get = staticmethod(lambda symbol=None: [])
     symbol_select = staticmethod(lambda s, f: True)
     symbol_info = staticmethod(lambda s: NS(point=0.01, trade_contract_size=1.0, trade_tick_size=0.01,
                                             trade_tick_value=0.01, volume_min=0.01, volume_max=100.0,

@@ -184,7 +184,8 @@ def _day(ts):
 def _skip_status(reason):
     """Entrée non prise : voulu (choix ou garde-fou du bot) ou anomalie ?"""
     r = (reason or "").lower()
-    if "account too small" in r or "cap full" in r or "stopped" in r or " is off" in r:
+    if ("account too small" in r or "cap full" in r or "stopped" in r or " is off" in r
+            or "opposite position" in r or "opposite order" in r):
         return "info"
     return "problem"
 

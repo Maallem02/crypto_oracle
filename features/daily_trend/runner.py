@@ -50,7 +50,7 @@ from datetime import datetime, timedelta, timezone
 import MetaTrader5 as mt5
 
 from core.database import get_db
-from features.trading.executor import SYMBOL_MAP, close_partial
+from features.trading.executor import SYMBOL_MAP, close_partial, opposite_bot_exposure
 from features.trading.mt5_client import ensure_mt5
 from features.trading.risk_manager import DT_MAGIC
 from features.volume_profile.strategy import atr_series
@@ -307,6 +307,12 @@ def _open_long(symbol, mt5sym, stop_dist, settings, d, bar_t):
     si, tick, acct = mt5.symbol_info(mt5sym), mt5.symbol_info_tick(mt5sym), mt5.account_info()
     if si is None or tick is None or acct is None:
         _log(symbol, "error", bar_time=bar_t, reason="no symbol info / tick / account")
+        return
+    opp = opposite_bot_exposure(mt5sym, "buy", DT_MAGIC)          # jamais de sens opposé entre bots (2026-10-13)
+    if opp:
+        why = f"{opp} - bots never hold opposite positions on the same coin"
+        print(f"[DT] {symbol}: entry signal skipped - {why}")
+        _log(symbol, "skip", bar_time=bar_t, close=d["close"], level=d["level"], atr=d["atr"], reason=why)
         return
     risk_set = float(settings["risk_pct"])
     cap = float(settings.get("max_crypto_risk_pct", DEFAULT_SETTINGS["max_crypto_risk_pct"]))
